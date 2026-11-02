@@ -62,6 +62,14 @@ cd /Users/kwonjones/Documents/GitHub/record-classifier && python3 -m http.server
 
 ③의 **"설정 QR 보이기"**가 이 기기의 Discogs 토큰과 Gemini 키를 주소의 `#setup=`(base64url JSON) 뒤에 실은 QR을 그린다(`setupLink`, cdnjs의 qrcode-generator 1.4.4); 다른 기기가 그 QR을 찍으면 앱이 시작할 때 `#` 뒤를 읽어 저장하고 주소에서 지운다(`received`). `#` 뒤는 서버(GitHub Pages)에 가지 않는다. 처음 연 기기(토큰·키·목록 없음)에는 안내 문구가 뜬다. 목록(스캔 내역)은 기기마다 따로다 — DB는 Discogs 컬렉션이고, 컬렉션 불러오기는 남은 일.
 
+## Gemini 인계 문서와의 대조 (2026-11-02, 운영자가 전체 문서를 사진으로 보여 줌)
+
+처음 목적: "수동으로 입력하거나 검증하는 번거로움 없이, 휴대폰 카메라로 바코드나 커버·라벨을 비추면 완전 자동으로 인식·검색". Gemini는 수동 확인 모달을 만들었다가 "번거롭다"는 의견으로 뺐다. 그래서 **팝업 창(prompt)은 쓰지 않고 카드 안 입력 칸으로**(`editing`, `editFormHtml`), **같은 번호의 판이 여럿이어도 연도가 모두 같으면 저절로 확정**(`autoPicked`; 자리는 장르·연도·아티스트로 정해지니 연도가 같으면 어느 판이든 같은 자리), 연도가 다를 때만 확인 필요. 문서의 남은 일 중 **유튜브 재생목록 자동 생성은 운영자가 "필요합니다"(2026-11-02)** — 아직 안 만듦, 아래 계획. ngrok 대신 GitHub Pages, Tesseract 대신 Gemini는 의도한 변경.
+
+## 유튜브 재생목록 (필요, 안 만듦)
+
+계획: Google Cloud 프로젝트에 YouTube Data API v3를 켜고 웹용 OAuth 클라이언트 ID(github.io 출처)를 만들면, 앱이 브라우저에서 Google 로그인(scope `youtube`)을 받아 등록된 음반마다 "아티스트 앨범 full album"을 검색해 장르별 재생목록(예: "LP · Jazz")에 넣는다. **한도가 문제**: 하루 10,000 단위, 검색 1건 100 단위 + 추가 50 단위 → 하루 약 66장. 3,000장이면 45일, 또는 Google에 한도 증설 신청. 운영자에게 이 수치를 말하고 순서를 정할 것. 클라이언트 ID는 비밀이 아니라 코드에 둘 수 있다.
+
 ## 1차 분류의 규칙 (운영자 결정 2026-11-02, 흐름 검증 뒤)
 
 - 칸 = Discogs 장르, 둘 이상이면 `GENRE_PRIORITY` (Hip Hop > Jazz > Funk / Soul > Electronic > …)에서 앞선 것. 소리 안내는 기본 "장르만"을 한국어로 (`GENRE_KO`) + 확인 필요 / 이미 등록됨 / 같은 음반 N번째 / 7인치 / 찾지 못함.

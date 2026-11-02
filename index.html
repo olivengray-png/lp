@@ -206,6 +206,7 @@ Return JSON with: artist (performer name), title (album or single title), label 
         let registerChain = Promise.resolve(); // 확정 즉시 등록을 한 장씩 차례로
         let placedKey = null; // 방금 찾은 음반: 둘 자리를 보여 준다
         let expandedKey = null;
+        let editing = null;   // { key, field: 'query' | 'year' | 'genre' } — 카드 안에서 고치는 중 (팝업 창 없음)
         let folderIds = null;
         let registering = false;
         let stopRequested = false;
@@ -497,8 +498,12 @@ Return JSON with: artist (performer name), title (album or single title), label 
                 } else {
                     item.candidates = ranked.slice(0, MAX_CANDIDATES);
                     item.pick = 0;
-                    // 판이 하나로 좁혀질 때만 저절로 확정한다
-                    item.status = exactCount === 1 ? 'picked' : 'check';
+                    // 저절로 확정: 번호가 정확히 같은 판이 하나뿐이거나, 여럿이어도 연도가 모두 같을 때
+                    // (선반 자리는 장르·연도·아티스트로 정해지니 연도가 같으면 어느 판이든 자리가 같다 — "수동 확인 없이", 운영자 원칙)
+                    const years = new Set(ranked.map(r => r.year));
+                    const sameYear = exactCount > 1 && years.size === 1 && !years.has('');
+                    item.status = exactCount === 1 || sameYear ? 'picked' : 'check';
+                    item.autoPicked = sameYear ? ranked.length : 0;
                     if (item.status === 'picked') keepOnlyPick(item);
                     item.repeated = items.some(other => other !== item && chosen(other)?.id === chosen(item).id);
                     placedKey = item.key;
@@ -695,6 +700,26 @@ Return JSON with: artist (performer name), title (album or single title), label 
             return r ? `${r.artist ? r.artist + ' - ' : ''}${r.album}${yearOf(item) ? ` (${yearOf(item)})` : ''}` : item.query;
         }
 
+        // 카드 안에서 바로 고치는 칸 (검색어 / 연도 / 장르 칸)
+        function editFormHtml(item) {
+            if (!editing || editing.key !== item.key) return '';
+            const field = editing.field;
+            const label = { query: '검색어', year: '발매연도 (네 자리, 비우면 Discogs 연도)', genre: '선반 칸 이름 (비우면 Discogs 장르)' }[field];
+            const value = { query: item.query, year: item.year || '', genre: item.genre || '' }[field];
+            const genres = [...new Set(items.map(genreOf).filter(g => g !== NO_GENRE))].sort();
+            const list = field === 'genre' ? `<datalist id="genreList">${[...new Set([...GENRE_PRIORITY, ...genres])].map(g => `<option value="${esc(g)}">`).join('')}</datalist>` : '';
+            return `
+                <form data-edit-form="${field}" data-key="${esc(item.key)}" class="flex flex-col gap-1.5 bg-gray-950/70 rounded-lg p-2">
+                    <label class="text-xs text-gray-400">${label}</label>
+                    <div class="flex gap-2">
+                        <input name="value" value="${esc(value)}" ${field === 'year' ? 'inputmode="numeric" pattern="\\d{4}|"' : ''} ${field === 'genre' ? 'list="genreList"' : ''} autocomplete="off" class="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-base text-gray-100">
+                        <button class="bg-amber-600 hover:bg-amber-500 text-white font-semibold px-4 rounded-lg">저장</button>
+                        <button type="button" data-action="edit-cancel" data-key="${esc(item.key)}" class="bg-gray-800 text-gray-300 px-3 rounded-lg">취소</button>
+                    </div>
+                    ${list}
+                </form>`;
+        }
+
         function placementHtml(item) {
             const r = chosen(item);
             const key = esc(item.key);
@@ -733,12 +758,13 @@ Return JSON with: artist (performer name), title (album or single title), label 
                 </div>
                 ${caution}
                 ${(item.copies || 1) > 1 ? `<div class="text-xs text-amber-200/90">같은 음반 ${item.copies}장 — 나란히 꽂습니다.</div>` : ''}
+                ${editFormHtml(item)}
                 <div class="flex flex-wrap gap-2">
                     ${item.shelved
                         ? `<button data-action="unshelve" data-key="${key}" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs py-1.5 px-3 rounded-lg">✔ 꽂음 (취소)</button>`
                         : `<button data-action="shelve" data-key="${key}" class="bg-green-700 hover:bg-green-600 text-white text-xs font-semibold py-1.5 px-3 rounded-lg">선반에 꽂았음</button>`}
                     ${noYear}
-                    <button data-action="year" data-key="${key}" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs py-1.5 px-3 rounded-lg">${p.year ? '연도 고치기' : ''}</button>
+                    ${p.year ? `<button data-action="year" data-key="${key}" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs py-1.5 px-3 rounded-lg">연도 고치기</button>` : ''}
                     <button data-action="genre" data-key="${key}" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs py-1.5 px-3 rounded-lg">장르 칸 바꾸기</button>
                 </div>`;
         }
@@ -781,6 +807,7 @@ Return JSON with: artist (performer name), title (album or single title), label 
 
             const d = item.discogs || {};
             const notes = [
+                item.autoPicked ? `같은 번호의 판 ${item.autoPicked}개가 모두 ${yearOf(item)}년이라 자리가 같아 저절로 확정했습니다.` : '',
                 item.repeated ? '같은 음반이 목록에 또 있습니다 (다른 값으로 스캔됨).' : '',
                 (item.copies || 1) > 1 ? `실물 ${item.copies}장.` : '',
                 isSeven(item) ? '7인치 — 12인치가 끝난 뒤 따로.' : '',
@@ -795,6 +822,7 @@ Return JSON with: artist (performer name), title (album or single title), label 
                 canChange && item.candidates.length > 1 ? button('toggle', expandedKey === item.key ? '후보 닫기' : `다른 판 ${item.candidates.length - 1}개 보기`) : '',
                 ['none', 'error'].includes(item.status) ? button('retry', '다시 검색') : '',
                 ['none', 'error', 'check'].includes(item.status) ? button('edit', '검색어 고치기') : '',
+                r && !isRegistered(item) ? button('year', yearOf(item) ? '연도 고치기' : '연도 입력') : '',
                 r ? button('place', '둘 자리 보기') : '',
                 r && !isSeven(item) && item.status === 'picked' ? (item.shelved ? button('unshelve', '✔ 꽂음', 'bg-green-900/60 hover:bg-green-900 text-green-200') : button('shelve', '꽂았음', 'bg-green-700 hover:bg-green-600 text-white')) : '',
                 isRegistered(item) ? button('unregister', 'Discogs에서 빼기', 'bg-gray-800 hover:bg-red-900 text-red-300') : button('remove', '삭제', 'bg-gray-800 hover:bg-gray-700 text-gray-400')
@@ -814,6 +842,7 @@ Return JSON with: artist (performer name), title (album or single title), label 
                         </div>
                     </div>
                     ${notes}
+                    ${editFormHtml(item)}
                     ${expandedKey === item.key && canChange ? candidatesHtml(item) : ''}
                     <div class="flex flex-wrap gap-2 text-xs pt-1 border-t border-gray-700/50">
                         <a href="${esc(discogsUrl)}" target="_blank" rel="noopener" class="bg-gray-700 hover:bg-gray-600 text-amber-400 py-2 px-3 rounded-lg font-medium">Discogs에서 보기</a>
@@ -1474,16 +1503,12 @@ Return JSON with: artist (performer name), title (album or single title), label 
                 case 'retry':
                     lookUp(item);
                     return;
-                case 'edit': {
-                    const query = prompt('검색어를 고쳐 주세요.', item.query);
-                    if (!query || !query.trim()) return;
-                    item.query = query.trim();
-                    item.source = queryType(item.query);
-                    item.key = `${item.source}:${normal(item.query)}:${item.addedAt}`;
-                    item.candidates = [];
-                    lookUp(item);
-                    return;
-                }
+                case 'edit':
+                    editing = { key: item.key, field: 'query' };
+                    break;
+                case 'edit-cancel':
+                    editing = null;
+                    break;
                 case 'remove':
                     if (!confirm('이 음반을 목록에서 삭제할까요?')) return;
                     items = items.filter(entry => entry !== item);
@@ -1497,25 +1522,46 @@ Return JSON with: artist (performer name), title (album or single title), label 
                 case 'place-done':
                     placedKey = null;
                     break;
-                case 'year': {
-                    const answer = prompt('이 음반의 발매연도 (네 자리 숫자). 비우면 Discogs의 연도로 돌아갑니다.', yearOf(item));
-                    if (answer === null) return;
-                    const year = answer.trim();
-                    if (year && !/^\d{4}$/.test(year)) {
-                        showMessage('연도는 네 자리 숫자로 적어 주세요 (예: 1978).');
-                        return;
-                    }
-                    item.year = year;
+                case 'year':
+                    editing = { key: item.key, field: 'year' };
                     break;
-                }
-                case 'genre': {
-                    const genres = [...new Set(items.map(genreOf).filter(g => g !== NO_GENRE))].sort();
-                    const answer = prompt(`선반 칸 이름. 비우면 Discogs의 장르로 돌아갑니다.\n지금 있는 칸: ${genres.join(', ') || '(없음)'}`, genreOf(item) === NO_GENRE ? '' : genreOf(item));
-                    if (answer === null) return;
-                    item.genre = answer.trim();
+                case 'genre':
+                    editing = { key: item.key, field: 'genre' };
                     break;
-                }
             }
+            saveItems();
+            render();
+            if (editing) document.querySelector(`[data-edit-form][data-key="${CSS.escape(editing.key)}"] input`)?.focus();
+        });
+
+        // 카드 안 입력 칸의 저장
+        document.addEventListener('submit', event => {
+            const form = event.target.closest('[data-edit-form]');
+            if (!form) return;
+            event.preventDefault();
+            const item = items.find(entry => entry.key === form.dataset.key);
+            if (!item) return;
+            const value = form.elements.value.value.trim();
+            const field = form.dataset.editForm;
+            if (field === 'query') {
+                if (!value) return;
+                item.query = value;
+                item.source = queryType(value);
+                item.key = `${item.source}:${normal(value)}:${item.addedAt}`;
+                item.candidates = [];
+                editing = null;
+                lookUp(item);
+                return;
+            }
+            if (field === 'year') {
+                if (value && !/^\d{4}$/.test(value)) {
+                    showMessage('연도는 네 자리 숫자로 적어 주세요 (예: 1978).');
+                    return;
+                }
+                item.year = value;
+            }
+            if (field === 'genre') item.genre = value;
+            editing = null;
             saveItems();
             render();
         });
