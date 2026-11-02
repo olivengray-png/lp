@@ -54,6 +54,10 @@ cd /Users/kwonjones/Documents/GitHub/record-classifier && python3 -m http.server
 
 ① 레코드장 한 칸씩 꺼내기 → ② 한 장씩 휴대폰으로 스캔하며 화면의 장르 칸을 보고 그 더미에 놓기 (확정 즉시 Discogs 등록, 운영자 결정) → ③ 더미마다 앱의 꽂기 순서표(연도 → 아티스트)대로 꽂기. 573장은 Discogs에서 산 것이라 컬렉션에 이미 있고, 다시 스캔하면 "이미 있음"으로 자리만 알려 준다 (컬렉션 불러오기는 그래서 뒤로 미룸).
 
+## 사진 읽기 (Gemini, 운영자 결정 2026-11-02 "네, Gemini로")
+
+운영자 보고: 카메라가 재킷을 못 읽는다 — 지금 도구(ZXing 바코드, Tesseract 영문 인쇄체)의 한계. **"재킷·라벨 사진 찍어 찾기"**(`photoInput`, 휴대폰 카메라 앱의 원본)와 바코드 카메라의 "이 화면 읽어서 찾기"가 사진을 긴 변 1280 px JPEG로 줄여 Gemini `generateContent`(JSON 스키마 응답, temperature 0, `PHOTO_PROMPT`: 보이는 것만, 추측 금지)에 보내 artist · title · label · catalog_number · barcode · year를 받는다. **키는 Discogs 토큰처럼 그 기기의 브라우저에만** (`GEMINI_KEY`); 모델은 `gemini-2.5-flash`, 없으면(404) 모델 목록에서 flash 모델을 고른다(`geminiModel`). 찾기 순서 `photoSearch`: 바코드 → 카탈로그 번호(**정확히 같은 판만**, 없으면 다음) → 아티스트 + 앨범명(후보, 확인 필요, 자동 확정 없음). 카드에 읽은 내용과 어느 것으로 맞았는지 보인다. 측정 2026-11-02: CORS 사전 요청이 github.io 출처를 허용한다; 가짜 Gemini 응답으로 네 경로 확인, 실제 키와 실제 재킷으로는 아직 — 정확도는 재킷 20장으로 잰다. 비용은 Google AI Studio의 무료 한도 뒤 소액(값은 미측정).
+
 ## 1차 분류의 규칙 (운영자 결정 2026-11-02, 흐름 검증 뒤)
 
 - 칸 = Discogs 장르, 둘 이상이면 `GENRE_PRIORITY` (Hip Hop > Jazz > Funk / Soul > Electronic > …)에서 앞선 것. 소리 안내는 기본 "장르만"을 한국어로 (`GENRE_KO`) + 확인 필요 / 이미 등록됨 / 같은 음반 N번째 / 7인치 / 찾지 못함.
