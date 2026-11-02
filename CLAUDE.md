@@ -48,7 +48,7 @@ cd /Users/kwonjones/Documents/GitHub/record-classifier && python3 -m http.server
 
 ## 배포
 
-공개 저장소 `olivengray-png/record-classifier`, GitHub Pages가 `main`의 루트를 그대로 낸다 (운영자 승인 2026-11-02 "네, 올려 주세요"). **휴대폰 주소: https://olivengray-png.github.io/record-classifier/** — `main`에 푸시하면 1분쯤 뒤 반영된다. 토큰과 목록은 각 기기의 브라우저에만 있어 저장소에 들어가지 않는다.
+공개 저장소 `olivengray-png/lp` (처음 이름 `record-classifier`, 2026-11-02 운영자 요청으로 짧게; 이 폴더 이름은 그대로), GitHub Pages가 `main`의 루트를 그대로 낸다 (운영자 승인 2026-11-02 "네, 올려 주세요"). **휴대폰 주소: https://olivengray-png.github.io/lp/** — `main`에 푸시하면 1분쯤 뒤 반영된다. 운영자는 QR(`analysis/lp_qr.png`)로 한 번 열고 홈 화면에 추가해 쓴다. 토큰과 목록은 각 기기의 브라우저에만 있어 저장소에 들어가지 않는다.
 
 ## 운영자의 정리 흐름 (2026-11-02 결정)
 
