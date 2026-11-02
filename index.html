@@ -1294,11 +1294,12 @@ Return JSON with: artist (performer name), title (album or single title), label 
         // 카메라 하나로 다 읽는다 (운영자의 처음 요청, 2026-11-02에 되살림): 바코드는 계속 읽고,
         // 바코드가 안 보이는 채로 화면이 잠깐 멈추면 그 화면을 Gemini에 보내 재킷·라벨·뒷면을 읽는다.
         // 같은 장면은 한 번만 보낸다 (움직였다가 다시 멈춰야 다음 장면).
-        const live = { timer: null, lastSample: null, sentSample: null, stableSince: 0, lastBarcodeAt: 0, lastSentAt: 0, busy: false };
+        const live = { timer: null, lastSample: null, sentSample: null, stableSince: 0, newSceneSince: 0, lastBarcodeAt: 0, lastSentAt: 0, busy: false };
         const LIVE_TICK_MS = 350;
-        const LIVE_STABLE_MS = 1200;      // 이만큼 멈춰 있으면 읽는다
-        const LIVE_MOTION = 6;            // 이보다 크면 움직이는 중 (픽셀 밝기 차이 평균, 0–255)
+        const LIVE_STABLE_MS = 1000;      // 이만큼 멈춰 있으면 읽는다
+        const LIVE_MOTION = 11;           // 이보다 크면 움직이는 중 (픽셀 밝기 차이 평균, 0–255; 손에 든 휴대폰의 흔들림은 움직임이 아니다 — 2026-11-02 13:05 운영자 화면)
         const LIVE_NEW_SCENE = 14;        // 마지막으로 보낸 장면과 이보다 다르면 새 음반
+        const LIVE_FORCE_MS = 3500;       // 새 음반을 비춘 지 이만큼 지나면 멈추지 않아도 읽는다
         const LIVE_COOLDOWN_MS = 4000;    // 한 번 보낸 뒤 최소 간격
         const liveStatus = () => document.getElementById('liveStatus');
 
@@ -1337,11 +1338,15 @@ Return JSON with: artist (performer name), title (album or single title), label 
             if (live.busy) return;
             if (!gemini.key) { liveStatus().textContent = '바코드만 읽는 중 — ③에 Gemini 키를 넣으면 재킷·라벨도 읽습니다'; return; }
             if (now - live.lastBarcodeAt < 3000) { liveStatus().textContent = '바코드를 읽었습니다'; return; }
-            if (moving) { liveStatus().textContent = '비추고 잠깐 멈추세요'; return; }
-            const stableFor = now - live.stableSince;
             const newScene = frameDiff(sample, live.sentSample) > LIVE_NEW_SCENE;
-            if (!newScene) { liveStatus().textContent = '같은 장면 — 다음 음반을 비추세요'; return; }
-            if (stableFor < LIVE_STABLE_MS || now - live.lastSentAt < LIVE_COOLDOWN_MS) { liveStatus().textContent = '잠깐만…'; return; }
+            if (!newScene) { live.newSceneSince = 0; liveStatus().textContent = '같은 장면 — 다음 음반을 비추세요'; return; }
+            if (!live.newSceneSince) live.newSceneSince = now;
+            const stableFor = now - live.stableSince;
+            const waitedLong = now - live.newSceneSince >= LIVE_FORCE_MS;
+            if (now - live.lastSentAt < LIVE_COOLDOWN_MS) { liveStatus().textContent = '잠깐만…'; return; }
+            if (moving && !waitedLong) { liveStatus().textContent = '비추고 잠깐 멈추세요'; return; }
+            if (stableFor < LIVE_STABLE_MS && !waitedLong) { liveStatus().textContent = '잠깐만…'; return; }
+            live.newSceneSince = 0;
             live.busy = true;
             live.sentSample = sample;
             live.lastSentAt = now;
