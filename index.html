@@ -1116,20 +1116,47 @@ Return JSON with: artist (performer name), title (album or single title), label 
             return data;
         }
 
-        // 모델 이름이 맞지 않으면 (404) 모델 목록에서 flash 모델을 고른다
-        async function geminiModel() {
-            if (gemini.model) return gemini.model;
+        // 써 볼 모델의 순서: 무료 한도가 있는 gemini-2.5-flash 먼저, 그다음 목록의 다른 flash 모델.
+        // 2026-11-02: 이름순 마지막 flash 모델(gemini-omni-1.1-flash)을 골랐더니 무료 한도가 0이라 한 장도 못 읽었다.
+        async function geminiCandidates() {
             const data = await geminiFetch('/models?pageSize=100');
             const names = (data.models || [])
                 .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
                 .map(m => m.name.replace(/^models\//, ''));
-            const pick = names.filter(n => /flash/.test(n) && !/lite|preview|exp|tts|image|live|audio|8b/.test(n)).sort().reverse()[0]
-                || names.filter(n => /flash/.test(n)).sort().reverse()[0]
-                || names[0];
-            if (!pick) throw new Error('쓸 수 있는 Gemini 모델을 찾지 못했습니다.');
+            const plain = names.filter(n => /flash/.test(n) && !/lite|preview|exp|tts|image|live|audio|8b/.test(n)).sort().reverse();
+            const lite = names.filter(n => /flash/.test(n) && /lite/.test(n) && !/preview|exp/.test(n)).sort().reverse();
+            const ordered = [...new Set([GEMINI_DEFAULT_MODEL, ...plain, ...lite, ...names.filter(n => /flash/.test(n))])].filter(n => names.includes(n));
+            if (!ordered.length) throw new Error('쓸 수 있는 Gemini 모델을 찾지 못했습니다.');
+            return ordered;
+        }
+
+        async function geminiModel() {
+            if (gemini.model) return gemini.model;
+            const [pick] = await geminiCandidates();
             gemini.model = pick;
             store(GEMINI_KEY, gemini);
             return pick;
+        }
+
+        // 무료 한도가 아예 없는 모델(limit: 0)은 다른 모델로; 분당 한도에 닿은 것은 기다려서
+        function geminiProblem(e) {
+            const text = e.message || '';
+            if (e.status === 404) return 'missing';
+            if (e.status === 429 && /limit:\s*0\b/.test(text)) return 'no-quota';
+            if (e.status === 429) return 'wait';
+            return 'other';
+        }
+
+        function shortGeminiError(e, model) {
+            const text = e.message || '';
+            const retry = text.match(/retry in (\d+)h?(\d+)?m?([\d.]+)?s?/i);
+            if (geminiProblem(e) === 'wait') {
+                const m = text.match(/retry in\s*(?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?/i);
+                const minutes = m ? Math.ceil(((Number(m[1]) || 0) * 3600 + (Number(m[2]) || 0) * 60 + (Number(m[3]) || 0)) / 60) : 0;
+                return `Gemini 무료 한도에 닿았습니다 (모델 ${model}). ${minutes ? `약 ${minutes}분 뒤 다시 찍어 보세요.` : '잠시 뒤 다시 찍어 보세요.'}`;
+            }
+            if (geminiProblem(e) === 'no-quota') return `모델 ${model}은 이 키로 쓸 수 없어(무료 한도 0) 다른 모델로 바꿉니다.`;
+            return `Gemini 오류 (${model}): ${text.split('\n')[0].slice(0, 160)}`;
         }
 
         async function readPhoto(jpegBase64) {
@@ -1148,15 +1175,28 @@ Return JSON with: artist (performer name), title (album or single title), label 
                     }
                 }
             });
-            const call = async () => geminiFetch(`/models/${await geminiModel()}:generateContent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
-            let data;
-            try {
-                data = await call();
-            } catch (e) {
-                if (e.status !== 404 || !gemini.model) throw e;
-                gemini.model = ''; // 저장된 모델이 사라졌다: 목록에서 다시 고른다
-                data = await call();
+            const call = model => geminiFetch(`/models/${model}:generateContent`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+            let data = null;
+            let candidates = null;
+            const tried = new Set();
+            let model = await geminiModel();
+            for (let attempt = 0; attempt < 4; attempt++) {
+                tried.add(model);
+                try {
+                    data = await call(model);
+                    if (gemini.model !== model) { gemini.model = model; store(GEMINI_KEY, gemini); }
+                    break;
+                } catch (e) {
+                    const problem = geminiProblem(e);
+                    if (problem !== 'missing' && problem !== 'no-quota') throw new Error(shortGeminiError(e, model));
+                    showMessage(shortGeminiError(e, model));
+                    candidates = candidates || await geminiCandidates();
+                    const next = candidates.find(n => !tried.has(n)); // 순서대로, 아직 안 써 본 모델
+                    if (!next) throw new Error(`이 키로 쓸 수 있는 Gemini 모델이 없습니다 (시도: ${[...tried].join(', ')}).`);
+                    model = next;
+                }
             }
+            if (!data) throw new Error('Gemini가 답하지 않았습니다.');
             const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
             let read;
             try { read = JSON.parse(text); } catch (e) { throw new Error('Gemini의 답을 읽지 못했습니다: ' + text.slice(0, 80)); }
@@ -1176,7 +1216,7 @@ Return JSON with: artist (performer name), title (album or single title), label 
             try {
                 read = await readPhoto(jpegBase64);
             } catch (e) {
-                showMessage(`사진을 읽지 못했습니다: ${e.message}`);
+                showMessage(`사진을 읽지 못했습니다. ${e.message}`);
                 return;
             }
             const id = read.barcode || read.catalog_number || [read.artist, read.title].filter(Boolean).join(' ');
@@ -1463,7 +1503,7 @@ Return JSON with: artist (performer name), title (album or single title), label 
             gemini = { key, model: '' };
             showMessage('Gemini 키를 확인하는 중…');
             try {
-                const model = await geminiModel();
+                const model = await geminiModel(); // 무료 한도가 있는 모델부터; 사진을 읽을 때 안 되는 모델은 저절로 바뀐다
                 store(GEMINI_KEY, gemini);
                 input.value = '';
                 showMessage(`Gemini 준비됨 (모델 ${model}). 이제 재킷·라벨 사진으로 찾을 수 있습니다.`);
