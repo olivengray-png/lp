@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VINYL SCANNER</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+    <!-- ZXing 바코드 라이브러리 -->
+    <script type="text/javascript" src="https://unpkg.com/@zxing/library@0.23.0"></script>
+    <!-- Tesseract.js OCR 라이브러리 -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+    <style>
+        .tile-number { font-variant-numeric: tabular-nums; }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+    <!-- 맨 위: 제목과 Discogs 연결 상태 (항상 보인다) -->
+    <header class="sticky top-0 z-20 bg-gray-950/95 backdrop-blur border-b border-gray-800">
+        <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="text-amber-500 text-xl">⚡</span>
+                <h1 class="text-lg font-bold tracking-wider text-amber-500 truncate">VINYL SCANNER</h1>
+            </div>
+            <button id="connectionPill" class="flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-full border transition"></button>
+        </div>
+        <!-- 안내 문구: 닫기 전까지 남는다 -->
+        <div id="messageBar" class="hidden max-w-6xl mx-auto px-4 pb-3">
+            <div class="flex items-start gap-3 bg-amber-500/10 border border-amber-500/40 rounded-xl px-4 py-3 text-sm text-amber-200">
+                <span id="messageText" class="flex-1 whitespace-pre-line"></span>
+                <button id="messageClose" class="text-amber-300/70 hover:text-amber-200 text-lg leading-none" aria-label="닫기">×</button>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto p-4 grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)] lg:items-start">
+
+        <!-- 왼쪽: 찾기, 등록, 연결 -->
+        <aside class="flex flex-col gap-4 lg:sticky lg:top-[72px]">
+
+            <!-- ① 음반 찾기 -->
+            <section class="bg-gray-900 rounded-2xl p-4 border border-gray-800 flex flex-col gap-3">
+                <h2 class="text-sm font-semibold text-amber-400">① 음반 찾기</h2>
+                <form id="manualForm" class="flex gap-2">
+                    <input id="manualInput" type="text" autocomplete="off" inputmode="search" placeholder="바코드 · 카탈로그 번호 · 앨범명" class="flex-1 min-w-0 bg-gray-950 border border-gray-700 rounded-xl px-3 py-3 text-base placeholder-gray-500">
+                    <button class="bg-amber-600 hover:bg-amber-500 text-white font-semibold px-5 rounded-xl transition">찾기</button>
+                </form>
+                <p class="text-xs text-gray-400 leading-relaxed">번호로 찾으면 번호가 정확히 같은 판만 보여 줍니다. 앨범명으로 찾으면 비슷한 음반이 섞이니 확인이 필요합니다.</p>
+
+                <div id="cameraBox" class="hidden relative w-full aspect-[4/3] bg-black rounded-xl overflow-hidden border border-amber-500/50">
+                    <video id="video" class="w-full h-full object-cover" autoplay muted playsinline></video>
+                    <canvas id="snapshotCanvas" class="hidden"></canvas>
+                    <canvas id="processedCanvas" class="hidden"></canvas>
+                    <div class="absolute inset-0 border-2 border-dashed border-amber-400/40 m-4 rounded-lg pointer-events-none flex flex-col justify-between p-2">
+                        <span id="statusIndicator" class="self-end text-[11px] text-green-400 bg-black/60 px-2 py-0.5 rounded-full">● 바코드 자동 인식 중</span>
+                        <span class="self-center text-xs text-amber-200/90 bg-black/70 py-1 px-3 rounded-lg">바코드 또는 카탈로그 번호를 중앙에</span>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button id="startButton" class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-100 font-semibold py-3 rounded-xl transition">📷 카메라 켜기</button>
+                    <button id="stopButton" class="hidden flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-semibold py-3 rounded-xl transition">카메라 끄기</button>
+                    <button id="captureOcrButton" class="hidden flex-1 bg-amber-600 hover:bg-amber-500 text-white font-semibold py-3 rounded-xl transition">글자 읽어서 찾기</button>
+                </div>
+            </section>
+
+            <!-- ② 확정하고 등록 -->
+            <section class="bg-gray-900 rounded-2xl p-4 border border-gray-800 flex flex-col gap-3">
+                <h2 class="text-sm font-semibold text-amber-400">② 확정하고 Discogs에 등록</h2>
+                <div id="summary" class="grid grid-cols-4 gap-1 text-center"></div>
+                <button id="confirmAllButton" class="w-full bg-gray-800 hover:bg-gray-700 text-gray-100 font-medium py-2.5 rounded-xl transition text-sm"></button>
+                <button id="registerButton" class="w-full bg-amber-600 hover:bg-amber-500 disabled:bg-gray-800 disabled:text-gray-500 text-white font-semibold py-3 rounded-xl transition"></button>
+                <button id="stopRegisterButton" class="hidden w-full bg-red-900 hover:bg-red-800 text-red-100 font-semibold py-2.5 rounded-xl">등록 중단</button>
+                <button id="exportButton" class="w-full bg-gray-800 hover:bg-gray-700 text-gray-100 font-medium py-2.5 rounded-xl transition text-sm">표 내려받기 (CSV)</button>
+            </section>
+
+            <!-- ③ Discogs 연결 -->
+            <section id="connectionPanel" class="bg-gray-900 rounded-2xl p-4 border border-gray-800 flex flex-col gap-3">
+                <h2 class="text-sm font-semibold text-amber-400">③ Discogs 연결</h2>
+                <p id="connectionState" class="text-sm text-gray-200"></p>
+                <div id="connectionForm" class="flex flex-col gap-2">
+                    <input id="tokenInput" type="password" autocomplete="off" placeholder="Discogs 개인 토큰 붙여 넣기" class="bg-gray-950 border border-gray-700 rounded-xl px-3 py-3 text-base text-gray-100 placeholder-gray-500">
+                    <button id="connectButton" class="bg-amber-600 hover:bg-amber-500 text-white font-semibold py-3 rounded-xl">연결 확인</button>
+                    <p class="text-xs text-gray-400 leading-relaxed">토큰은 Discogs 설정 → Developers 화면의 "Personal access token"입니다. 이 기기의 브라우저에만 저장됩니다.</p>
+                </div>
+                <button id="disconnectButton" class="hidden bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium py-2.5 rounded-xl text-sm">연결 끊기 (토큰 지우기)</button>
+            </section>
+        </aside>
+
+        <!-- 오른쪽: 둘 자리, 목록 -->
+        <div class="flex flex-col gap-4 min-w-0">
+        <!-- 방금 찾은 음반을 둘 자리 (스캔 직후 가장 먼저 읽는 것) -->
+        <section id="placement" class="hidden bg-amber-500/10 border-2 border-amber-500 rounded-2xl p-4 flex flex-col gap-3"></section>
+
+        <section class="bg-gray-900 rounded-2xl p-4 border border-gray-800 flex flex-col gap-3 min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+                <h2 class="text-sm font-semibold text-amber-400 mr-auto">목록</h2>
+                <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer"><input id="speakToggle" type="checkbox" class="accent-amber-500"> 소리로 자리 안내</label>
+                <div class="flex rounded-lg overflow-hidden border border-gray-700 text-xs">
+                    <button data-sort="recent" class="sort-tab px-3 py-2">최근 순</button>
+                    <button data-sort="genre" class="sort-tab px-3 py-2">장르 → 연도 → 아티스트</button>
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <input id="filterText" type="search" placeholder="아티스트, 앨범, 번호로 찾기" class="flex-1 min-w-0 bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm placeholder-gray-500">
+                <select id="filterStatus" class="bg-gray-950 border border-gray-700 rounded-lg px-2 py-2 text-sm">
+                    <option value="all">전체</option>
+                    <option value="check">확인 필요</option>
+                    <option value="todo">등록 대기</option>
+                    <option value="done">등록 완료</option>
+                    <option value="problem">없음 · 오류</option>
+                </select>
+            </div>
+            <div id="list" class="space-y-2 text-sm"></div>
+        </section>
+        </div>
+    </main>
+
+    <script>
+        const API = 'https://api.discogs.com';
+        const ITEMS_KEY = 'vinyl.items.v1';
+        const AUTH_KEY = 'vinyl.discogs.v1';
+        const SORT_KEY = 'vinyl.sort.v1';
+        const SPEAK_KEY = 'vinyl.speak.v1';
+        const MAX_CANDIDATES = 5;
+        const MAX_FAILURES_IN_A_ROW = 5;
+        const PAGE = 50;
+        const NO_GENRE = '장르 없음';
+
+        const videoElement = document.getElementById('video');
+        const rawCanvas = document.getElementById('snapshotCanvas');
+        const processedCanvas = document.getElementById('processedCanvas');
+        const messageBar = document.getElementById('messageBar');
+        const messageText = document.getElementById('messageText');
+        const registerButton = document.getElementById('registerButton');
+        const stopRegisterButton = document.getElementById('stopRegisterButton');
+        const confirmAllButton = document.getElementById('confirmAllButton');
+        const filterText = document.getElementById('filterText');
+        const filterStatus = document.getElementById('filterStatus');
+        const cameraBox = document.getElementById('cameraBox');
+
+        let codeReader;
+        let ocrWorker;
+        let items = load(ITEMS_KEY, []);
+        let auth = load(AUTH_KEY, { token: '', username: '' });
+        let sortMode = load(SORT_KEY, 'recent');
+        let speak = load(SPEAK_KEY, false);
+        let placedKey = null; // 방금 찾은 음반: 둘 자리를 보여 준다
+        let expandedKey = null;
+        let folderIds = null;
+        let registering = false;
+        let stopRequested = false;
+        let nextRequestAt = 0;
+        const openGenres = new Set();
+        const shown = new Map(); // 그룹별로 몇 장까지 펼쳤는지
+
+        // 새로고침으로 끊긴 검색은 다시 검색할 수 있게 남긴다
+        items.forEach(item => {
+            if (item.status === 'searching') {
+                item.status = 'error';
+                item.error = '검색이 끝나기 전에 화면이 닫혔습니다.';
+            }
+        });
+
+        // 검색 규칙이 바뀌어 종류가 달라진 미확정 행은 다시 찾는다 (2026-11-02: '2058 975'를 글자로 검색했던 행)
+        const outdated = items.filter(item => ['check', 'none'].includes(item.status) && queryType(item.query) !== item.source);
+        outdated.forEach(item => {
+            item.source = queryType(item.query);
+            item.key = `${item.source}:${normal(item.query)}`;
+            item.candidates = [];
+            item.pick = 0;
+        });
+
+        function load(key, fallback) {
+            try {
+                const raw = localStorage.getItem(key);
+                return raw ? JSON.parse(raw) : fallback;
+            } catch (e) {
+                return fallback;
+            }
+        }
+
+        function store(key, value) {
+            try {
+                localStorage.setItem(key, JSON.stringify(value));
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function saveItems() {
+            if (!store(ITEMS_KEY, items)) {
+                showMessage('이 기기에 저장하지 못했습니다. 지금 표를 내려받아 주세요.');
+            }
+        }
+
+        function wait(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function esc(text) {
+            return String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        // 안내 문구는 닫기 전까지 남는다 (잠깐 떴다 사라지는 문구는 운영자가 보지 못했다, 2026-11-02)
+        function showMessage(text) {
+            messageText.textContent = text;
+            messageBar.classList.remove('hidden');
+        }
+
+        function playBeep(freq = 800) {
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.15);
+            } catch(e) {}
+        }
+
+        function isValidBarcode(barcode) {
+            return /^\d{8,14}$/.test(barcode.replace(/[\s-]/g, ''));
+        }
+
+        // 1. 자동 이미지 전처리 함수 (흑백화 + 픽셀 고대비 처리)
+        function preprocessImage(srcCanvas, destCanvas) {
+            const ctx = srcCanvas.getContext('2d');
+            const width = srcCanvas.width;
+            const height = srcCanvas.height;
+
+            destCanvas.width = width;
+            destCanvas.height = height;
+            const destCtx = destCanvas.getContext('2d');
+
+            const imgData = ctx.getImageData(0, 0, width, height);
+            const data = imgData.data;
+
+            // Grayscale & High Contrast 알고리즘
+            for (let i = 0; i < data.length; i += 4) {
+                const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+                // 명암 대비 1.5배 보정
+                const v = (avg - 128) * 1.5 + 128;
+                const finalColor = Math.min(255, Math.max(0, v));
+                data[i] = finalColor;     // Red
+                data[i + 1] = finalColor; // Green
+                data[i + 2] = finalColor; // Blue
+            }
+            destCtx.putImageData(imgData, 0, 0);
+        }
+
+        // 2. OCR 텍스트 정제 및 카탈로그 번호 패턴 정규화 함수
+        function extractOptimalKeywords(rawText) {
+            const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+
+            // 카탈로그 번호 패턴 추출 (예: BST-84154, PC 33703, ST-5678, LP-1001 등)
+            const catNumRegex = /\b([A-Z]{1,5})[-\s]?[0-9]{3,7}\b/g;
+            const notCatalogPrefix = ['SIDE', 'TRACK', 'VOL', 'NO', 'THE', 'AND', 'FOR', 'TEL', 'FAX', 'PAGE'];
+            for (let line of lines) {
+                for (let match of line.matchAll(catNumRegex)) {
+                    if (!notCatalogPrefix.includes(match[1])) {
+                        return { type: 'catalog', query: match[0] };
+                    }
+                }
+            }
+
+            // 카탈로그 번호가 없으면 4글자 이상의 주요 텍스트를 자동 결합
+            const cleanWords = rawText
+                .replace(/[^a-zA-Z0-9\s]/g, ' ')
+                .split(/\s+/)
+                .filter(w => w.length >= 4 && !['STEREO', 'SIDE', 'ALBUM', 'RECORDS', 'MUSIC'].includes(w.toUpperCase()));
+
+            return { type: 'text', query: cleanWords.slice(0, 3).join(' ') };
+        }
+
+        // 카탈로그 번호: 글자+숫자(BST-84154), 숫자 두 묶음(2058 975), 또는 바코드보다 짧은 숫자(205845)
+        function queryType(query) {
+            const text = query.trim();
+            if (isValidBarcode(text)) return 'barcode';
+            if (/^[A-Z]{1,5}[-\s]?\d{2,7}[A-Z]?$/i.test(text)) return 'catalog';
+            if (/^\d{2,5}[-\s]\d{2,5}$/.test(text) || /^\d{4,7}$/.test(text)) return 'catalog';
+            return 'text';
+        }
+
+        function normal(text) {
+            return String(text ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        }
+
+        // 3. Discogs 요청: 분당 한도를 넘지 않도록 간격을 두고 보낸다 (토큰 60회, 토큰 없음 25회)
+        class DiscogsError extends Error {
+            constructor(status, message) {
+                super(message);
+                this.status = status;
+            }
+        }
+
+        async function pace() {
+            const now = Date.now();
+            const at = Math.max(now, nextRequestAt);
+            nextRequestAt = at + (auth.token ? 1100 : 2500);
+            if (at > now) await wait(at - now);
+        }
+
+        async function discogs(path, { method = 'GET', body } = {}) {
+            const headers = {};
+            if (auth.token) headers.Authorization = `Discogs token=${auth.token}`;
+            if (body) headers['Content-Type'] = 'application/json';
+
+            for (let attempt = 0; attempt < 3; attempt++) {
+                await pace();
+                let res;
+                try {
+                    res = await fetch(API + path, { method, headers, body });
+                } catch (e) {
+                    throw new DiscogsError(0, 'Discogs에 연결하지 못했습니다. 인터넷을 확인해 주세요.');
+                }
+                if (res.status === 429) {
+                    showMessage('Discogs 요청 한도에 닿아 1분 기다립니다.');
+                    await wait(60000);
+                    continue;
+                }
+                const text = await res.text();
+                let data = null;
+                try { data = text ? JSON.parse(text) : null; } catch (e) {}
+                if (!res.ok) throw new DiscogsError(res.status, data?.message || `Discogs 오류 HTTP ${res.status}`);
+                return data;
+            }
+            throw new DiscogsError(429, 'Discogs 요청 한도가 풀리지 않았습니다. 잠시 뒤 다시 시도해 주세요.');
+        }
+
+        function slimRelease(r) {
+            const parts = (r.title || '').split(' - ');
+            const hasArtist = parts.length > 1;
+            return {
+                id: r.id,
+                // Discogs가 동명이인을 나누는 표시 "Name (2)"는 뺀다
+                artist: hasArtist ? parts[0].replace(/\s*\(\d+\)$/, '').replace(/\*$/, '') : '',
+                album: hasArtist ? parts.slice(1).join(' - ') : r.title || '',
+                year: r.year || '',
+                country: r.country || '',
+                label: (r.label || [])[0] || '',
+                catno: r.catno || '',
+                genre: (r.genre || []).slice(0, 2),
+                style: (r.style || []).slice(0, 3),
+                format: (r.format || []).slice(0, 4).join(', '),
+                thumb: r.thumb || r.cover_image || '',
+                uri: r.uri || '',
+                have: r.community?.have || 0
+            };
+        }
+
+        async function searchReleases(item) {
+            const base = 'type=release&format=Vinyl&per_page=25';
+            const find = async term => (await discogs(`/database/search?${term}&${base}`)).results || [];
+            const query = encodeURIComponent(item.query);
+
+            if (item.source === 'barcode') {
+                const digits = item.query.replace(/[\s-]/g, '');
+                const results = await find(`barcode=${digits}`);
+                return results.length ? results : find(`q=${digits}`);
+            }
+            if (item.source === 'catalog') {
+                // 번호 검색은 번호로만 묻는다. 글자 검색(q=)은 '2058 975'에 엉뚱한 음반 39건을 주었다 (2026-11-02 측정)
+                const results = await find(`catno=${query}`);
+                return results.length ? results : find(`catno=${encodeURIComponent(item.query.replace(/[\s-]/g, ''))}`);
+            }
+            return find(`q=${query}`);
+        }
+
+        // 번호(카탈로그 번호, 바코드)로 찾았을 때는 번호가 정확히 같은 판만 남긴다:
+        // Discogs는 번호 검색에도 비슷한 번호의 다른 음반을 섞어 주므로, 틀린 판을 보여 주느니 '없음'이 낫다.
+        // 남은 판은 보유자가 많은 순서.
+        function rankCandidates(results, item) {
+            const wanted = normal(item.query);
+            const matches = {
+                catalog: r => normal(r.catno) === wanted,
+                barcode: r => (r.barcode || []).some(code => normal(code) === wanted),
+                text: () => true
+            }[item.source];
+            const ranked = results.filter(matches).map(slimRelease).sort((a, b) => b.have - a.have);
+            return { ranked, exactCount: item.source === 'text' ? 0 : ranked.length };
+        }
+
+        async function lookUp(item) {
+            item.status = 'searching';
+            item.error = '';
+            render();
+            try {
+                const results = await searchReleases(item);
+                const { ranked, exactCount } = rankCandidates(results, item);
+                if (!ranked.length) {
+                    item.status = 'none';
+                } else {
+                    item.candidates = ranked.slice(0, MAX_CANDIDATES);
+                    item.pick = 0;
+                    // 판이 하나로 좁혀질 때만 저절로 확정한다
+                    item.status = exactCount === 1 ? 'picked' : 'check';
+                    if (item.status === 'picked') keepOnlyPick(item);
+                    item.repeated = items.some(other => other !== item && chosen(other)?.id === chosen(item).id);
+                    placedKey = item.key;
+                    announce(item);
+                }
+            } catch (e) {
+                item.status = 'error';
+                item.error = e.message;
+            }
+            saveItems();
+            render();
+        }
+
+        function chosen(item) {
+            return item.candidates?.[item.pick || 0] || null;
+        }
+
+        function keepOnlyPick(item) {
+            item.candidates = [chosen(item)];
+            item.pick = 0;
+        }
+
+        function addScan(query, source) {
+            const key = `${source}:${normal(query)}`;
+            if (items.some(item => item.key === key)) {
+                playBeep(300);
+                showMessage(`이미 목록에 있습니다: ${query}`);
+                return;
+            }
+            playBeep(880);
+            const item = { key, source, query, status: 'searching', candidates: [], pick: 0, addedAt: Date.now(), discogs: null };
+            items.unshift(item);
+            lookUp(item);
+        }
+
+        // 4. 장르 → 발매연도 → 아티스트 정렬 — 선반의 순서와 똑같아야 한다
+        function genreOf(item) {
+            return item.genre || chosen(item)?.genre?.[0] || NO_GENRE;
+        }
+
+        // 운영자가 적은 연도가 Discogs의 연도보다 먼저다 (Discogs에 연도가 빈 판이 있다: Chosen Few 2058 975)
+        function yearOf(item) {
+            return item.year || chosen(item)?.year || '';
+        }
+
+        function artistOf(item) {
+            return chosen(item)?.artist || '';
+        }
+
+        function compareItems(a, b) {
+            const numberYear = item => Number(yearOf(item)) || 9999;
+            return (genreOf(a) === NO_GENRE) - (genreOf(b) === NO_GENRE)
+                || genreOf(a).localeCompare(genreOf(b))
+                || numberYear(a) - numberYear(b)
+                || artistOf(a).localeCompare(artistOf(b), 'en', { sensitivity: 'base' })
+                || String(chosen(a)?.album || '').localeCompare(String(chosen(b)?.album || ''), 'en', { sensitivity: 'base' });
+        }
+
+        // 선반에 꽂힌 것으로 치는 음반: 판이 정해진 것 (찾지 못한 것과 오류는 아직 자리가 없다)
+        function shelved() {
+            return items.filter(item => chosen(item) && ['picked', 'check'].includes(item.status)).sort(compareItems);
+        }
+
+        function decadeOf(item) {
+            const year = Number(yearOf(item));
+            return year ? `${Math.floor(year / 10) * 10}년대` : '연도 미상';
+        }
+
+        // 둘 자리: 같은 장르 칸 안에서 몇 번째, 바로 앞과 뒤에 꽂힌 음반
+        function placementOf(item) {
+            const row = shelved();
+            const index = row.indexOf(item);
+            const section = row.filter(other => genreOf(other) === genreOf(item));
+            const at = section.indexOf(item);
+            return {
+                genre: genreOf(item), year: yearOf(item), decade: decadeOf(item), artist: artistOf(item),
+                position: at + 1, count: section.length,
+                before: at > 0 ? section[at - 1] : null,
+                after: at >= 0 && at < section.length - 1 ? section[at + 1] : null,
+                index
+            };
+        }
+
+        function announce(item) {
+            if (!speak || !('speechSynthesis' in window)) return;
+            const p = placementOf(item);
+            const text = `${p.genre}, ${p.year || '연도 미상'}, ${p.artist}`;
+            speechSynthesis.cancel();
+            const utter = new SpeechSynthesisUtterance(text);
+            utter.lang = 'ko-KR';
+            speechSynthesis.speak(utter);
+        }
+
+        function isRegistered(item) {
+            return ['done', 'exists'].includes(item.discogs?.state);
+        }
+
+        function matchesFilter(item) {
+            const filter = filterStatus.value;
+            if (filter === 'check' && item.status !== 'check') return false;
+            if (filter === 'todo' && (item.status !== 'picked' || isRegistered(item))) return false;
+            if (filter === 'done' && !isRegistered(item)) return false;
+            if (filter === 'problem' && !['none', 'error'].includes(item.status) && item.discogs?.state !== 'failed') return false;
+            const words = filterText.value.trim().toLowerCase();
+            if (!words) return true;
+            const r = chosen(item) || {};
+            return [item.query, r.artist, r.album, r.catno, r.label].join(' ').toLowerCase().includes(words);
+        }
+
+        // 5. 화면 그리기
+        function statusBadge(item) {
+            if (isRegistered(item)) return ['Discogs 등록됨', 'bg-green-500/20 text-green-300 border-green-500/40'];
+            if (item.discogs?.state === 'failed') return ['등록 실패', 'bg-red-500/20 text-red-300 border-red-500/40'];
+            return {
+                searching: ['검색 중…', 'bg-amber-500/20 text-amber-300 border-amber-500/40'],
+                check: ['확인 필요', 'bg-sky-500/20 text-sky-300 border-sky-500/40'],
+                picked: ['등록 대기', 'bg-gray-500/20 text-gray-200 border-gray-500/40'],
+                none: ['없음', 'bg-red-500/20 text-red-300 border-red-500/40'],
+                error: ['오류', 'bg-red-500/20 text-red-300 border-red-500/40']
+            }[item.status];
+        }
+
+        function noneText(item) {
+            if (item.source === 'catalog') return `카탈로그 번호가 정확히 같은 판이 Discogs 바이닐에 없습니다. 번호를 다시 보거나 아티스트와 앨범명으로 찾아 보세요.`;
+            if (item.source === 'barcode') return `바코드가 정확히 같은 판이 Discogs 바이닐에 없습니다. 카탈로그 번호로 찾아 보세요.`;
+            return 'Discogs 바이닐에서 찾지 못했습니다. 검색어를 고쳐 보세요.';
+        }
+
+        function sourceLabel(item) {
+            return { barcode: '바코드', catalog: '카탈로그 번호', text: '앨범명 검색' }[item.source];
+        }
+
+        function releaseLine(r) {
+            return [r.year || '연도 미상', r.country, r.label, r.catno].filter(Boolean).join(' · ');
+        }
+
+        function shortName(item) {
+            const r = chosen(item);
+            return r ? `${r.artist ? r.artist + ' - ' : ''}${r.album}${yearOf(item) ? ` (${yearOf(item)})` : ''}` : item.query;
+        }
+
+        function placementHtml(item) {
+            const p = placementOf(item);
+            const r = chosen(item);
+            const key = esc(item.key);
+            const neighbour = (label, other) => `
+                <div class="flex items-baseline gap-2 min-w-0">
+                    <span class="text-xs text-amber-300/80 w-7 flex-shrink-0">${label}</span>
+                    <span class="text-sm ${other ? 'text-gray-100' : 'text-gray-500'} truncate">${other ? esc(shortName(other)) : '(없음 — 이 칸의 ' + (label === '앞' ? '맨 앞' : '맨 뒤') + ')'}</span>
+                </div>`;
+            const caution = item.status === 'check' ? '<div class="text-xs text-sky-300">아직 확정 전입니다. 1순위 판 기준의 자리이고, 다른 판을 고르면 연도가 바뀔 수 있습니다.</div>' : '';
+            const noYear = !p.year ? `<button data-action="year" data-key="${key}" class="bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold py-1.5 px-3 rounded-lg">연도 직접 입력</button>` : '';
+            return `
+                <div class="flex items-center justify-between gap-2">
+                    <h2 class="text-sm font-semibold text-amber-300">📍 방금 찾은 음반을 둘 자리</h2>
+                    <button data-action="place-done" data-key="${key}" class="text-xs text-amber-300/80 hover:text-amber-200">닫기 ×</button>
+                </div>
+                <div class="text-base text-white font-medium">${esc(shortName(item))}</div>
+                <div class="grid grid-cols-3 gap-2 text-center">
+                    <div class="bg-gray-950/70 rounded-xl py-3"><div class="text-[11px] text-gray-400">장르 칸</div><div class="text-xl font-bold text-amber-300 leading-tight">${esc(p.genre)}</div></div>
+                    <div class="bg-gray-950/70 rounded-xl py-3"><div class="text-[11px] text-gray-400">연도</div><div class="text-xl font-bold text-amber-300 leading-tight">${esc(p.year || '미상')}</div><div class="text-[11px] text-gray-500">${esc(p.decade)}</div></div>
+                    <div class="bg-gray-950/70 rounded-xl py-3 min-w-0"><div class="text-[11px] text-gray-400">아티스트</div><div class="text-lg font-bold text-amber-300 leading-tight truncate px-1">${esc(p.artist || '-')}</div></div>
+                </div>
+                <div class="bg-gray-950/70 rounded-xl p-3 flex flex-col gap-1.5">
+                    <div class="text-xs text-gray-400">${esc(p.genre)} 칸 ${p.count}장 중 <span class="text-amber-300 font-semibold">${p.position}번째</span> — 이 두 장 사이에 꽂으세요</div>
+                    ${neighbour('앞', p.before)}
+                    ${neighbour('뒤', p.after)}
+                </div>
+                ${caution}
+                <div class="flex flex-wrap gap-2">
+                    ${noYear}
+                    <button data-action="year" data-key="${key}" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs py-1.5 px-3 rounded-lg">${p.year ? '연도 고치기' : ''}</button>
+                    <button data-action="genre" data-key="${key}" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs py-1.5 px-3 rounded-lg">장르 칸 바꾸기</button>
+                </div>`;
+        }
+
+        function coverHtml(r, size = 'w-16 h-16') {
+            return r?.thumb
+                ? `<img src="${esc(r.thumb)}" alt="" class="${size} rounded-lg object-cover border border-amber-500/30 flex-shrink-0">`
+                : `<div class="${size} bg-gray-700 rounded-lg flex items-center justify-center text-amber-400 font-bold text-[10px] flex-shrink-0">VINYL</div>`;
+        }
+
+        function candidatesHtml(item) {
+            const rows = item.candidates.map((r, index) => `
+                <button data-action="pick" data-key="${esc(item.key)}" data-index="${index}" class="w-full flex items-center gap-3 text-left bg-gray-950 hover:bg-gray-800 border ${index === item.pick ? 'border-amber-500' : 'border-gray-700'} rounded-lg p-2">
+                    ${coverHtml(r, 'w-12 h-12')}
+                    <span class="min-w-0 flex-1">
+                        <span class="block text-white text-sm">${index === item.pick ? '✔ ' : ''}${esc(r.artist)} - ${esc(r.album)}</span>
+                        <span class="block text-xs text-amber-300/90">${esc(releaseLine(r))}</span>
+                        <span class="block text-xs text-gray-400">${esc(r.format)} · 보유 ${r.have}명</span>
+                    </span>
+                </button>`).join('');
+            return `<div class="space-y-1.5"><p class="text-xs text-gray-400">같은 번호의 판 ${item.candidates.length}개 — 가진 판을 고르고 확정하세요.</p>${rows}</div>`;
+        }
+
+        function cardHtml(item) {
+            const r = chosen(item);
+            const [label, tone] = statusBadge(item);
+            const title = r ? `${r.artist ? r.artist + ' - ' : ''}${r.album}` : item.query;
+            const searchTerm = encodeURIComponent(r ? `${r.artist} ${r.album}` : item.query);
+            const discogsUrl = r?.uri ? `https://www.discogs.com${r.uri}` : `https://www.discogs.com/search/?q=${searchTerm}&format_exact=Vinyl`;
+            const key = esc(item.key);
+            const button = (action, text, tone = 'bg-gray-700 hover:bg-gray-600 text-gray-100') => `<button data-action="${action}" data-key="${key}" class="${tone} py-2 px-3 rounded-lg font-medium">${text}</button>`;
+            const canChange = item.status === 'check' && !isRegistered(item);
+
+            const yearNote = item.year && item.year !== r?.year ? ` · 선반 연도 ${esc(item.year)}(직접 입력)` : '';
+            const genreNote = item.genre ? ` · 선반 칸 ${esc(item.genre)}(직접 지정)` : '';
+            const detail = r ? `
+                <div class="text-sm text-amber-300/90">${esc(releaseLine(r))}${yearNote}${genreNote}</div>
+                <div class="text-xs text-gray-400">${esc([(r.genre || []).concat(r.style || []).join(' / '), r.format].filter(Boolean).join(' · '))}</div>`
+                : `<div class="text-sm ${item.status === 'searching' ? 'text-gray-400' : 'text-red-300'}">${esc(item.error || (item.status === 'none' ? noneText(item) : 'Discogs 검색 중…'))}</div>`;
+
+            const notes = [
+                item.repeated ? '같은 음반이 목록에 또 있습니다.' : '',
+                item.discogs?.state === 'exists' ? 'Discogs 컬렉션에 이미 있어 새로 넣지 않았습니다.' : '',
+                item.discogs?.state === 'done' ? `Discogs 폴더 「${item.discogs.folder}」에 넣었습니다.` : '',
+                item.discogs?.state === 'failed' ? `등록 실패: ${item.discogs.message}` : ''
+            ].filter(Boolean).map(text => `<div class="text-xs text-amber-200/90">${esc(text)}</div>`).join('');
+
+            const actions = [
+                canChange ? button('confirm', '이 판으로 확정', 'bg-amber-600 hover:bg-amber-500 text-white') : '',
+                canChange && item.candidates.length > 1 ? button('toggle', expandedKey === item.key ? '후보 닫기' : `다른 판 ${item.candidates.length - 1}개 보기`) : '',
+                ['none', 'error'].includes(item.status) ? button('retry', '다시 검색') : '',
+                ['none', 'error', 'check'].includes(item.status) ? button('edit', '검색어 고치기') : '',
+                r ? button('place', '둘 자리 보기') : '',
+                isRegistered(item) ? '' : button('remove', '삭제', 'bg-gray-800 hover:bg-gray-700 text-gray-400')
+            ].filter(Boolean).join('');
+
+            return `
+                <article class="bg-gray-800/70 border border-gray-700/80 rounded-xl p-3 flex flex-col gap-2">
+                    <div class="flex items-start gap-3">
+                        ${coverHtml(r)}
+                        <div class="flex-1 min-w-0 flex flex-col gap-0.5">
+                            <div class="flex items-start justify-between gap-2">
+                                <div class="font-semibold text-white text-base leading-snug">${esc(title)}</div>
+                                <span class="text-[11px] ${tone} border px-2 py-0.5 rounded-md flex-shrink-0 font-medium whitespace-nowrap">${label}</span>
+                            </div>
+                            ${detail}
+                            <div class="text-[11px] text-gray-500">${esc(sourceLabel(item))}: ${esc(item.query)}</div>
+                        </div>
+                    </div>
+                    ${notes}
+                    ${expandedKey === item.key && canChange ? candidatesHtml(item) : ''}
+                    <div class="flex flex-wrap gap-2 text-xs pt-1 border-t border-gray-700/50">
+                        <a href="${esc(discogsUrl)}" target="_blank" rel="noopener" class="bg-gray-700 hover:bg-gray-600 text-amber-400 py-2 px-3 rounded-lg font-medium">Discogs에서 보기</a>
+                        <a href="https://www.youtube.com/results?search_query=${searchTerm}%20full%20album" target="_blank" rel="noopener" class="bg-gray-700 hover:bg-gray-600 text-red-300 py-2 px-3 rounded-lg font-medium">유튜브</a>
+                        ${actions}
+                    </div>
+                </article>`;
+        }
+
+        function pagedHtml(groupKey, list) {
+            const limit = shown.get(groupKey) || PAGE;
+            const html = list.slice(0, limit).map(cardHtml).join('');
+            const more = list.length > limit
+                ? `<button data-more="${esc(groupKey)}" class="w-full bg-gray-800 hover:bg-gray-700 text-gray-200 py-2.5 rounded-lg text-sm">${list.length - limit}장 더 보기</button>`
+                : '';
+            return html + more;
+        }
+
+        function renderList() {
+            const visible = items.filter(matchesFilter);
+            const listBox = document.getElementById('list');
+            if (!items.length) {
+                listBox.innerHTML = '<p class="text-gray-500 text-center py-10 text-sm">아직 없습니다. 왼쪽 ①에서 번호를 넣거나 카메라를 켜 보세요.</p>';
+                return;
+            }
+            if (!visible.length) {
+                listBox.innerHTML = '<p class="text-gray-500 text-center py-10 text-sm">조건에 맞는 음반이 없습니다.</p>';
+                return;
+            }
+            if (sortMode === 'recent') {
+                listBox.innerHTML = pagedHtml('recent', visible);
+                return;
+            }
+            const groups = new Map();
+            visible.sort(compareItems).forEach(item => {
+                const genre = genreOf(item);
+                if (!groups.has(genre)) groups.set(genre, []);
+                groups.get(genre).push(item);
+            });
+            const searching = filterText.value.trim() !== '';
+            listBox.innerHTML = [...groups].map(([genre, list]) => {
+                const open = searching || openGenres.has(genre);
+                return `
+                    <details data-genre="${esc(genre)}" ${open ? 'open' : ''} class="bg-gray-950/60 rounded-xl border border-gray-800">
+                        <summary class="flex justify-between cursor-pointer px-3 py-3 font-medium text-base">
+                            <span>${esc(genre)}</span>
+                            <span class="text-amber-300 font-mono text-sm">${list.length}장</span>
+                        </summary>
+                        ${open ? `<div class="space-y-2 p-2">${pagedHtml(genre, list)}</div>` : ''}
+                    </details>`;
+            }).join('');
+        }
+
+        function render() {
+            const ready = items.filter(item => item.status === 'picked' && !isRegistered(item));
+            const check = items.filter(item => item.status === 'check');
+            const done = items.filter(isRegistered);
+            const tile = (count, label, tone = 'text-amber-400') => `<div class="bg-gray-950/60 rounded-lg py-2"><div class="text-xl font-bold ${tone} tile-number">${count}</div><div class="text-[11px] text-gray-400">${label}</div></div>`;
+            document.getElementById('summary').innerHTML =
+                tile(items.length, '전체', 'text-gray-100') + tile(check.length, '확인 필요', 'text-sky-300') + tile(ready.length, '등록 대기') + tile(done.length, '등록 완료', 'text-green-300');
+
+            confirmAllButton.textContent = `확인 필요 ${check.length}장을 모두 1순위 판으로 확정`;
+            confirmAllButton.classList.toggle('hidden', check.length === 0);
+            registerButton.textContent = !auth.token ? '③에서 Discogs를 연결하면 등록할 수 있습니다'
+                : registering ? '등록 중…'
+                : ready.length ? `Discogs에 등록 (${ready.length}장)` : '등록할 음반이 없습니다';
+            registerButton.disabled = registering || ready.length === 0 || !auth.token;
+            stopRegisterButton.classList.toggle('hidden', !registering);
+
+            const placed = items.find(item => item.key === placedKey && chosen(item));
+            const placement = document.getElementById('placement');
+            placement.classList.toggle('hidden', !placed);
+            placement.innerHTML = placed ? placementHtml(placed) : '';
+            document.getElementById('speakToggle').checked = speak;
+
+            document.querySelectorAll('.sort-tab').forEach(tab => {
+                const on = tab.dataset.sort === sortMode;
+                tab.className = `sort-tab px-3 py-2 ${on ? 'bg-amber-600 text-white' : 'bg-gray-950 text-gray-300 hover:bg-gray-800'}`;
+            });
+            renderList();
+
+            const pill = document.getElementById('connectionPill');
+            pill.textContent = auth.token ? `● Discogs 연결됨 · ${auth.username}` : '○ Discogs 연결 안 됨';
+            pill.className = `flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-full border transition ${auth.token ? 'border-green-500/50 text-green-300 bg-green-500/10' : 'border-red-500/50 text-red-300 bg-red-500/10'}`;
+            document.getElementById('connectionState').textContent = auth.token
+                ? `연결됨: ${auth.username}. 등록은 이 계정의 컬렉션에 들어갑니다.`
+                : '연결 안 됨. 토큰을 넣어야 Discogs에 등록할 수 있고 표지 사진도 나옵니다.';
+            document.getElementById('connectionForm').classList.toggle('hidden', !!auth.token);
+            document.getElementById('disconnectButton').classList.toggle('hidden', !auth.token);
+            document.getElementById('connectionPanel').classList.toggle('border-red-500/60', !auth.token);
+        }
+
+        // 6. Discogs 컬렉션 등록: 장르 이름의 폴더에 넣고, 이미 있으면 다시 넣지 않는다
+        function userPath() {
+            return `/users/${encodeURIComponent(auth.username)}/collection`;
+        }
+
+        async function folderFor(genre) {
+            if (!folderIds) {
+                const data = await discogs(`${userPath()}/folders`);
+                folderIds = new Map((data.folders || []).map(folder => [folder.name, folder.id]));
+            }
+            if (!genre) return 1; // Discogs 기본 폴더 Uncategorized
+            if (!folderIds.has(genre)) {
+                const folder = await discogs(`${userPath()}/folders`, { method: 'POST', body: JSON.stringify({ name: genre }) });
+                folderIds.set(genre, folder.id);
+            }
+            return folderIds.get(genre);
+        }
+
+        async function inCollection(releaseId) {
+            try {
+                const data = await discogs(`${userPath()}/releases/${releaseId}`);
+                return (data.releases || []).length > 0;
+            } catch (e) {
+                if (e.status === 404) return false;
+                throw e;
+            }
+        }
+
+        async function registerItem(item) {
+            const release = chosen(item);
+            if (await inCollection(release.id)) {
+                item.discogs = { state: 'exists' };
+                return;
+            }
+            const genre = release.genre?.[0];
+            const folderId = await folderFor(genre);
+            const added = await discogs(`${userPath()}/folders/${folderId}/releases/${release.id}`, { method: 'POST' });
+            item.discogs = { state: 'done', instanceId: added.instance_id, folder: genre || 'Uncategorized' };
+        }
+
+        async function registerAll() {
+            if (!auth.token) {
+                showMessage('먼저 ③ Discogs 연결에서 토큰을 넣어 주세요.');
+                document.getElementById('connectionPanel').scrollIntoView({ behavior: 'smooth' });
+                return;
+            }
+            const targets = items.filter(item => item.status === 'picked' && !isRegistered(item));
+            const left = items.filter(item => item.status === 'check').length;
+            const note = left ? `\n확인 필요 ${left}장은 등록하지 않습니다.` : '';
+            if (!confirm(`등록 대기 ${targets.length}장을 ${auth.username} 계정의 Discogs 컬렉션에 등록합니다.${note}`)) return;
+
+            registering = true;
+            stopRequested = false;
+            render();
+            let finished = 0;
+            let failures = 0;
+            let haltReason = '';
+            for (const item of targets) {
+                if (stopRequested) break;
+                try {
+                    await registerItem(item);
+                    finished += 1;
+                    failures = 0;
+                } catch (e) {
+                    item.discogs = { state: 'failed', message: e.message };
+                    failures += 1;
+                    if ([401, 403].includes(e.status) || failures >= MAX_FAILURES_IN_A_ROW) {
+                        haltReason = e.message;
+                        break;
+                    }
+                }
+                saveItems();
+                showMessage(`등록 중 ${finished} / ${targets.length}`);
+                render();
+            }
+            registering = false;
+            saveItems();
+            const failed = targets.filter(item => item.discogs?.state === 'failed').length;
+            showMessage(haltReason ? `등록을 멈췄습니다: ${haltReason}` : `등록 끝: ${finished}장 처리, 실패 ${failed}장`);
+            render();
+        }
+
+        // 7. CSV 내려받기 (엑셀에서 한글이 깨지지 않도록 BOM을 붙인다)
+        function csvCell(value) {
+            let text = String(value ?? '');
+            if (/^[=+\-@]/.test(text)) text = `'${text}`;
+            return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+        }
+
+        function buildCsv() {
+            const header = ['장르', '스타일', '발매연도', '아티스트', '앨범', '카탈로그 번호', '레이블', '국가', '포맷', 'Discogs 번호', 'Discogs 주소', '상태', '스캔 값'];
+            const rows = items.filter(chosen).sort(compareItems).map(item => {
+                const r = chosen(item);
+                return [genreOf(item), (r.style || []).join(' / '), yearOf(item), r.artist, r.album, r.catno, r.label, r.country, r.format, r.id,
+                    r.uri ? `https://www.discogs.com${r.uri}` : '', statusBadge(item)[0], item.query];
+            });
+            return '﻿' + [header, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n');
+        }
+
+        function exportCsv() {
+            const url = URL.createObjectURL(new Blob([buildCsv()], { type: 'text/csv;charset=utf-8' }));
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `vinyl_${new Date().toISOString().slice(0, 10)}.csv`;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // 8. 버튼 연결
+        const barcodeHints = new Map([
+            [ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8, ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.UPC_E]],
+            [ZXing.DecodeHintType.TRY_HARDER, true]
+        ]);
+
+        function setCamera(on) {
+            cameraBox.classList.toggle('hidden', !on);
+            document.getElementById('startButton').classList.toggle('hidden', on);
+            document.getElementById('stopButton').classList.toggle('hidden', !on);
+            document.getElementById('captureOcrButton').classList.toggle('hidden', !on);
+        }
+
+        // 카메라 시작
+        document.getElementById('startButton').addEventListener('click', async () => {
+            codeReader = new ZXing.BrowserMultiFormatReader(barcodeHints);
+            try {
+                setCamera(true);
+                const constraints = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } };
+                await codeReader.decodeFromConstraints(constraints, 'video', result => {
+                    if (result && isValidBarcode(result.text)) {
+                        const barcode = result.text.trim();
+                        if (!items.some(item => item.key === `barcode:${normal(barcode)}`)) addScan(barcode, 'barcode');
+                    }
+                });
+            } catch(e) {
+                setCamera(false);
+                showMessage('카메라를 열지 못했습니다. 브라우저의 카메라 권한을 확인해 주세요.');
+            }
+        });
+
+        // 카메라 정지
+        document.getElementById('stopButton').addEventListener('click', () => {
+            if (codeReader) {
+                codeReader.reset();
+                const stream = videoElement.srcObject;
+                if (stream) {
+                    stream.getTracks().forEach(t => t.stop());
+                    videoElement.srcObject = null;
+                }
+            }
+            setCamera(false);
+        });
+
+        // 글자 읽어서 찾기
+        document.getElementById('captureOcrButton').addEventListener('click', async () => {
+            if (!videoElement.srcObject) {
+                showMessage('먼저 카메라를 켜 주세요.');
+                return;
+            }
+
+            showMessage('이미지 보정 후 글자를 읽는 중…');
+            playBeep(600);
+
+            // 프레임 캡처
+            const rawCtx = rawCanvas.getContext('2d');
+            rawCanvas.width = videoElement.videoWidth || 640;
+            rawCanvas.height = videoElement.videoHeight || 480;
+            rawCtx.drawImage(videoElement, 0, 0, rawCanvas.width, rawCanvas.height);
+
+            // 이미지 자동 전처리 적용
+            preprocessImage(rawCanvas, processedCanvas);
+
+            try {
+                // 전처리된 보정 이미지로 OCR 수행 (처음 한 번만 언어 파일을 받는다)
+                ocrWorker = ocrWorker || await Tesseract.createWorker('eng');
+                const ret = await ocrWorker.recognize(processedCanvas);
+                const extracted = extractOptimalKeywords(ret.data.text);
+
+                if (extracted.query && extracted.query.length >= 3) {
+                    showMessage(`읽은 값: ${extracted.query}`);
+                    addScan(extracted.query, extracted.type);
+                } else {
+                    showMessage('글자나 카탈로그 번호를 읽지 못했습니다. 조명을 밝히고 다시 시도해 주세요.');
+                }
+            } catch (err) {
+                console.error(err);
+                showMessage('글자를 읽는 중 오류가 났습니다.');
+            }
+        });
+
+        document.getElementById('manualForm').addEventListener('submit', event => {
+            event.preventDefault();
+            const input = document.getElementById('manualInput');
+            const query = input.value.trim();
+            if (!query) return;
+            input.value = '';
+            addScan(query, queryType(query));
+        });
+
+        document.addEventListener('click', event => {
+            const more = event.target.closest('[data-more]');
+            if (more) {
+                shown.set(more.dataset.more, (shown.get(more.dataset.more) || PAGE) + PAGE);
+                render();
+                return;
+            }
+            const sortTab = event.target.closest('.sort-tab');
+            if (sortTab) {
+                sortMode = sortTab.dataset.sort;
+                store(SORT_KEY, sortMode);
+                render();
+                return;
+            }
+            const control = event.target.closest('[data-action]');
+            if (!control) return;
+            const item = items.find(entry => entry.key === control.dataset.key);
+            if (!item) return;
+
+            switch (control.dataset.action) {
+                case 'toggle':
+                    expandedKey = expandedKey === item.key ? null : item.key;
+                    break;
+                case 'pick':
+                    item.pick = Number(control.dataset.index);
+                    break;
+                case 'confirm':
+                    item.status = 'picked';
+                    keepOnlyPick(item);
+                    expandedKey = null;
+                    break;
+                case 'retry':
+                    lookUp(item);
+                    return;
+                case 'edit': {
+                    const query = prompt('검색어를 고쳐 주세요.', item.query);
+                    if (!query || !query.trim()) return;
+                    item.query = query.trim();
+                    item.source = queryType(item.query);
+                    item.key = `${item.source}:${normal(item.query)}:${item.addedAt}`;
+                    item.candidates = [];
+                    lookUp(item);
+                    return;
+                }
+                case 'remove':
+                    if (!confirm('이 음반을 목록에서 삭제할까요?')) return;
+                    items = items.filter(entry => entry !== item);
+                    if (placedKey === item.key) placedKey = null;
+                    break;
+                case 'place':
+                    placedKey = item.key;
+                    document.getElementById('placement').scrollIntoView({ behavior: 'smooth' });
+                    announce(item);
+                    break;
+                case 'place-done':
+                    placedKey = null;
+                    break;
+                case 'year': {
+                    const answer = prompt('이 음반의 발매연도 (네 자리 숫자). 비우면 Discogs의 연도로 돌아갑니다.', yearOf(item));
+                    if (answer === null) return;
+                    const year = answer.trim();
+                    if (year && !/^\d{4}$/.test(year)) {
+                        showMessage('연도는 네 자리 숫자로 적어 주세요 (예: 1978).');
+                        return;
+                    }
+                    item.year = year;
+                    break;
+                }
+                case 'genre': {
+                    const genres = [...new Set(items.map(genreOf).filter(g => g !== NO_GENRE))].sort();
+                    const answer = prompt(`선반 칸 이름. 비우면 Discogs의 장르로 돌아갑니다.\n지금 있는 칸: ${genres.join(', ') || '(없음)'}`, genreOf(item) === NO_GENRE ? '' : genreOf(item));
+                    if (answer === null) return;
+                    item.genre = answer.trim();
+                    break;
+                }
+            }
+            saveItems();
+            render();
+        });
+
+        document.addEventListener('toggle', event => {
+            const genre = event.target.dataset?.genre;
+            if (!genre || event.target.open === openGenres.has(genre) || filterText.value.trim()) return;
+            if (event.target.open) openGenres.add(genre); else openGenres.delete(genre);
+            render();
+        }, true);
+
+        confirmAllButton.addEventListener('click', () => {
+            const check = items.filter(item => item.status === 'check');
+            if (!confirm(`확인 필요 ${check.length}장을 각각 1순위 판으로 확정합니다. 가진 판과 다른 판이 들어갈 수 있습니다.`)) return;
+            check.forEach(item => {
+                item.status = 'picked';
+                keepOnlyPick(item);
+            });
+            saveItems();
+            render();
+        });
+
+        registerButton.addEventListener('click', registerAll);
+        stopRegisterButton.addEventListener('click', () => { stopRequested = true; });
+        document.getElementById('exportButton').addEventListener('click', exportCsv);
+        document.getElementById('messageClose').addEventListener('click', () => messageBar.classList.add('hidden'));
+        document.getElementById('connectionPill').addEventListener('click', () => {
+            document.getElementById('connectionPanel').scrollIntoView({ behavior: 'smooth' });
+            document.getElementById('tokenInput').focus();
+        });
+        filterText.addEventListener('input', render);
+        filterStatus.addEventListener('change', render);
+        document.getElementById('speakToggle').addEventListener('change', event => {
+            speak = event.target.checked;
+            store(SPEAK_KEY, speak);
+            if (speak) {
+                const utter = new SpeechSynthesisUtterance('소리 안내를 켰습니다');
+                utter.lang = 'ko-KR';
+                speechSynthesis.speak(utter);
+            }
+        });
+
+        document.getElementById('connectButton').addEventListener('click', async () => {
+            const input = document.getElementById('tokenInput');
+            const token = input.value.trim();
+            if (!token) {
+                showMessage('토큰 칸이 비어 있습니다. Discogs에서 복사한 토큰을 붙여 넣어 주세요.');
+                input.focus();
+                return;
+            }
+            auth = { token, username: '' };
+            showMessage('Discogs에 연결을 확인하는 중…');
+            try {
+                const me = await discogs('/oauth/identity');
+                auth.username = me.username;
+                store(AUTH_KEY, auth);
+                folderIds = null;
+                input.value = '';
+                showMessage(`Discogs 연결됨: ${me.username}. 이제 등록할 수 있습니다.`);
+            } catch (e) {
+                auth = { token: '', username: '' };
+                showMessage(`연결하지 못했습니다: ${e.message}\n토큰을 다시 복사해 붙여 넣어 보세요.`);
+            }
+            render();
+        });
+
+        document.getElementById('disconnectButton').addEventListener('click', () => {
+            auth = { token: '', username: '' };
+            store(AUTH_KEY, auth);
+            folderIds = null;
+            render();
+        });
+
+        render();
+        outdated.forEach(lookUp);
+    </script>
+</body>
+</html>
