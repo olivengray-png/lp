@@ -10,6 +10,8 @@
     <script type="text/javascript" src="https://unpkg.com/@zxing/library@0.23.0"></script>
     <!-- Tesseract.js OCR 라이브러리 -->
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+    <!-- QR 그리기 (설정을 휴대폰으로 옮길 때) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
     <style>
         .tile-number { font-variant-numeric: tabular-nums; }
     </style>
@@ -81,7 +83,13 @@
 
             <!-- ③ Discogs 연결 -->
             <section id="connectionPanel" class="bg-gray-900 rounded-2xl p-4 border border-gray-800 flex flex-col gap-3">
-                <h2 class="text-sm font-semibold text-amber-400">③ Discogs 연결</h2>
+                <h2 class="text-sm font-semibold text-amber-400">③ 연결 (한 기기에서 한 번만)</h2>
+                <div id="transferBox" class="hidden bg-gray-950/70 rounded-xl p-3 flex flex-col gap-2">
+                    <p class="text-sm text-gray-200">다른 기기로 옮기기: 그 기기의 카메라로 이 QR을 찍으면 Discogs와 Gemini 연결이 그대로 들어갑니다.</p>
+                    <button id="transferButton" class="bg-gray-800 hover:bg-gray-700 text-amber-300 font-semibold py-2.5 rounded-xl text-sm">설정 QR 보이기</button>
+                    <div id="transferQr" class="hidden flex flex-col items-center gap-2 bg-white rounded-xl p-3"></div>
+                    <p id="transferNote" class="hidden text-xs text-gray-400 leading-relaxed">QR에는 토큰과 키가 들어 있습니다. 남에게 보이지 말고, 찍은 뒤에는 닫으세요.</p>
+                </div>
                 <p id="connectionState" class="text-sm text-gray-200"></p>
                 <div id="connectionForm" class="flex flex-col gap-2">
                     <input id="tokenInput" type="password" autocomplete="off" placeholder="Discogs 개인 토큰 붙여 넣기" class="bg-gray-950 border border-gray-700 rounded-xl px-3 py-3 text-base text-gray-100 placeholder-gray-500">
@@ -178,6 +186,19 @@ Return JSON with: artist (performer name), title (album or single title), label 
         let auth = load(AUTH_KEY, { token: '', username: '' });
         let sortMode = load(SORT_KEY, 'recent');
         let gemini = load(GEMINI_KEY, { key: '', model: '' });
+
+        // 다른 기기의 설정 QR을 찍고 들어왔다: 주소의 # 뒤(서버에는 가지 않는다)에서 연결을 받아 저장하고 주소에서 지운다
+        let received = null;
+        if (location.hash.startsWith('#setup=')) {
+            try {
+                received = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(7).replace(/-/g, '+').replace(/_/g, '/')))));
+                if (received.discogs?.token) { auth = { token: received.discogs.token, username: received.discogs.username || '' }; store(AUTH_KEY, auth); }
+                if (received.gemini?.key) { gemini = { key: received.gemini.key, model: received.gemini.model || '' }; store(GEMINI_KEY, gemini); }
+            } catch (e) {
+                received = { error: true };
+            }
+            history.replaceState(null, '', location.pathname + location.search);
+        }
         let speak = load(SPEAK_KEY, 'genre'); // 'off' | 'genre' (1차 분류: 장르만) | 'full' (장르·연도·아티스트)
         if (speak === true) speak = 'genre';
         if (speak === false) speak = 'off';
@@ -884,6 +905,8 @@ Return JSON with: artist (performer name), title (album or single title), label 
             document.getElementById('disconnectButton').classList.toggle('hidden', !auth.token);
             document.getElementById('connectionPanel').classList.toggle('border-red-500/60', !auth.token);
 
+            document.getElementById('transferBox').classList.toggle('hidden', !auth.token && !gemini.key);
+
             document.getElementById('geminiState').textContent = gemini.key
                 ? `준비됨 (모델 ${gemini.model || '자동'}). 재킷·라벨·뒷면 사진에서 번호와 이름을 읽습니다.`
                 : '키 없음. 지금은 바코드와 직접 입력으로만 찾습니다.';
@@ -1451,6 +1474,33 @@ Return JSON with: artist (performer name), title (album or single title), label 
             render();
         });
 
+        // 설정 QR: 이 기기의 연결(토큰, 키)을 주소의 # 뒤에 실어 QR로 그린다
+        function setupLink() {
+            const payload = JSON.stringify({ discogs: auth.token ? { token: auth.token, username: auth.username } : null, gemini: gemini.key ? { key: gemini.key, model: gemini.model } : null });
+            const encoded = btoa(unescape(encodeURIComponent(payload))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+            return `${location.origin}${location.pathname}#setup=${encoded}`;
+        }
+
+        document.getElementById('transferButton').addEventListener('click', () => {
+            const box = document.getElementById('transferQr');
+            const note = document.getElementById('transferNote');
+            const open = box.classList.contains('hidden');
+            box.classList.toggle('hidden', !open);
+            note.classList.toggle('hidden', !open);
+            document.getElementById('transferButton').textContent = open ? '설정 QR 닫기' : '설정 QR 보이기';
+            if (!open) { box.innerHTML = ''; return; }
+            try {
+                const qr = qrcode(0, 'M');
+                qr.addData(setupLink());
+                qr.make();
+                box.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+                box.querySelector('svg').style.width = 'min(100%, 320px)';
+                box.querySelector('svg').style.height = 'auto';
+            } catch (e) {
+                box.innerHTML = `<p class="text-sm text-red-700">QR을 그리지 못했습니다: ${esc(e.message)}</p>`;
+            }
+        });
+
         document.getElementById('geminiClearButton').addEventListener('click', () => {
             gemini = { key: '', model: '' };
             store(GEMINI_KEY, gemini);
@@ -1466,6 +1516,15 @@ Return JSON with: artist (performer name), title (album or single title), label 
 
         render();
         outdated.forEach(lookUp);
+
+        // 처음 열었을 때, 또는 설정 QR로 들어왔을 때 할 일을 말해 준다
+        if (received?.error) {
+            showMessage('설정 QR을 읽었지만 내용이 깨져 있습니다. 컴퓨터에서 QR을 다시 띄워 찍어 주세요.');
+        } else if (received) {
+            showMessage(`설정을 받았습니다 — ${[auth.token ? `Discogs 연결됨 (${auth.username})` : '', gemini.key ? 'Gemini 준비됨' : ''].filter(Boolean).join(', ')}. 바로 쓸 수 있습니다.`);
+        } else if (!auth.token && !gemini.key && !items.length) {
+            showMessage('처음이면 ③에서 Discogs 토큰과 Gemini 키를 한 번 넣으세요. 다른 기기에 이미 넣었다면 그 기기의 ③에서 "설정 QR 보이기"를 눌러 이 기기로 찍으면 끝입니다.');
+        }
     </script>
 </body>
 </html>

@@ -58,6 +58,10 @@ cd /Users/kwonjones/Documents/GitHub/record-classifier && python3 -m http.server
 
 운영자 보고: 카메라가 재킷을 못 읽는다 — 지금 도구(ZXing 바코드, Tesseract 영문 인쇄체)의 한계. **"재킷·라벨 사진 찍어 찾기"**(`photoInput`, 휴대폰 카메라 앱의 원본)와 바코드 카메라의 "이 화면 읽어서 찾기"가 사진을 긴 변 1280 px JPEG로 줄여 Gemini `generateContent`(JSON 스키마 응답, temperature 0, `PHOTO_PROMPT`: 보이는 것만, 추측 금지)에 보내 artist · title · label · catalog_number · barcode · year를 받는다. **키는 Discogs 토큰처럼 그 기기의 브라우저에만** (`GEMINI_KEY`); 모델은 `gemini-2.5-flash`, 없으면(404) 모델 목록에서 flash 모델을 고른다(`geminiModel`). 찾기 순서 `photoSearch`: 바코드 → 카탈로그 번호(**정확히 같은 판만**, 없으면 다음) → 아티스트 + 앨범명(후보, 확인 필요, 자동 확정 없음). 카드에 읽은 내용과 어느 것으로 맞았는지 보인다. 측정 2026-11-02: CORS 사전 요청이 github.io 출처를 허용한다; 가짜 Gemini 응답으로 네 경로 확인, 실제 키와 실제 재킷으로는 아직 — 정확도는 재킷 20장으로 잰다. 비용은 Google AI Studio의 무료 한도 뒤 소액(값은 미측정).
 
+## 설정은 한 기기에서 한 번 (운영자 지적 2026-11-02: 기기마다 키를 넣게 한 것은 "사용자의 편의성에 대해서는 전혀 고려되는 것이 없음")
+
+③의 **"설정 QR 보이기"**가 이 기기의 Discogs 토큰과 Gemini 키를 주소의 `#setup=`(base64url JSON) 뒤에 실은 QR을 그린다(`setupLink`, cdnjs의 qrcode-generator 1.4.4); 다른 기기가 그 QR을 찍으면 앱이 시작할 때 `#` 뒤를 읽어 저장하고 주소에서 지운다(`received`). `#` 뒤는 서버(GitHub Pages)에 가지 않는다. 처음 연 기기(토큰·키·목록 없음)에는 안내 문구가 뜬다. 목록(스캔 내역)은 기기마다 따로다 — DB는 Discogs 컬렉션이고, 컬렉션 불러오기는 남은 일.
+
 ## 1차 분류의 규칙 (운영자 결정 2026-11-02, 흐름 검증 뒤)
 
 - 칸 = Discogs 장르, 둘 이상이면 `GENRE_PRIORITY` (Hip Hop > Jazz > Funk / Soul > Electronic > …)에서 앞선 것. 소리 안내는 기본 "장르만"을 한국어로 (`GENRE_KO`) + 확인 필요 / 이미 등록됨 / 같은 음반 N번째 / 7인치 / 찾지 못함.
