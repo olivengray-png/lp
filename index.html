@@ -95,7 +95,11 @@
         <section class="bg-gray-900 rounded-2xl p-4 border border-gray-800 flex flex-col gap-3 min-w-0">
             <div class="flex flex-wrap items-center gap-2">
                 <h2 class="text-sm font-semibold text-amber-400 mr-auto">목록</h2>
-                <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer"><input id="speakToggle" type="checkbox" class="accent-amber-500"> 소리로 자리 안내</label>
+                <select id="speakMode" class="bg-gray-950 border border-gray-700 rounded-lg px-2 py-1.5 text-xs">
+                    <option value="off">소리 안내 끔</option>
+                    <option value="genre">소리: 장르만 (1차 분류)</option>
+                    <option value="full">소리: 장르·연도·아티스트</option>
+                </select>
                 <div class="flex rounded-lg overflow-hidden border border-gray-700 text-xs">
                     <button data-sort="recent" class="sort-tab px-3 py-2">최근 순</button>
                     <button data-sort="genre" class="sort-tab px-3 py-2">장르 → 연도 → 아티스트</button>
@@ -108,6 +112,8 @@
                     <option value="check">확인 필요</option>
                     <option value="todo">등록 대기</option>
                     <option value="done">등록 완료</option>
+                    <option value="box">상자에 있음 (안 꽂음)</option>
+                    <option value="seven">7인치</option>
                     <option value="problem">없음 · 오류</option>
                 </select>
             </div>
@@ -126,6 +132,10 @@
         const MAX_FAILURES_IN_A_ROW = 5;
         const PAGE = 50;
         const NO_GENRE = '장르 없음';
+        const SEVEN = '7인치';
+        // 장르가 둘 이상인 판의 칸: 이 순서에서 앞선 장르 (운영자 결정 2026-11-02; 컬렉션 573장 중 240장이 둘 이상)
+        const GENRE_PRIORITY = ['Hip Hop', 'Jazz', 'Funk / Soul', 'Electronic', 'Pop', 'Rock', 'Reggae', 'Latin', 'Blues', 'Classical', 'Folk, World, & Country', 'Stage & Screen', 'Non-Music', "Children's", 'Brass & Military'];
+        const GENRE_KO = { 'Hip Hop': '힙합', 'Jazz': '재즈', 'Funk / Soul': '펑크 소울', 'Electronic': '일렉트로닉', 'Pop': '팝', 'Rock': '록', 'Reggae': '레게', 'Latin': '라틴', 'Blues': '블루스', 'Classical': '클래식', 'Folk, World, & Country': '포크 월드 컨트리', 'Stage & Screen': '영화 음악', 'Non-Music': '비음악', "Children's": '어린이', 'Brass & Military': '브라스 군악', [NO_GENRE]: '장르 없음', [SEVEN]: '7인치' };
 
         const videoElement = document.getElementById('video');
         const rawCanvas = document.getElementById('snapshotCanvas');
@@ -144,7 +154,10 @@
         let items = load(ITEMS_KEY, []);
         let auth = load(AUTH_KEY, { token: '', username: '' });
         let sortMode = load(SORT_KEY, 'recent');
-        let speak = load(SPEAK_KEY, false);
+        let speak = load(SPEAK_KEY, 'genre'); // 'off' | 'genre' (1차 분류: 장르만) | 'full' (장르·연도·아티스트)
+        if (speak === true) speak = 'genre';
+        if (speak === false) speak = 'off';
+        let registerChain = Promise.resolve(); // 확정 즉시 등록을 한 장씩 차례로
         let placedKey = null; // 방금 찾은 음반: 둘 자리를 보여 준다
         let expandedKey = null;
         let folderIds = null;
@@ -154,12 +167,15 @@
         const openGenres = new Set();
         const shown = new Map(); // 그룹별로 몇 장까지 펼쳤는지
 
-        // 새로고침으로 끊긴 검색은 다시 검색할 수 있게 남긴다
+        // 새로고침으로 끊긴 검색과 등록은 다시 할 수 있게 남긴다
         items.forEach(item => {
             if (item.status === 'searching') {
                 item.status = 'error';
                 item.error = '검색이 끝나기 전에 화면이 닫혔습니다.';
             }
+            if (item.discogs?.state === 'registering') item.discogs = null;
+            if (item.copies === undefined) item.copies = 1;
+            if (item.shelved === undefined) item.shelved = false;
         });
 
         // 검색 규칙이 바뀌어 종류가 달라진 미확정 행은 다시 찾는다 (2026-11-02: '2058 975'를 글자로 검색했던 행)
@@ -345,9 +361,10 @@
                 country: r.country || '',
                 label: (r.label || [])[0] || '',
                 catno: r.catno || '',
-                genre: (r.genre || []).slice(0, 2),
+                genre: r.genre || [],
                 style: (r.style || []).slice(0, 3),
                 format: (r.format || []).slice(0, 4).join(', '),
+                seven: (r.format || []).includes('7"'),
                 thumb: r.thumb || r.cover_image || '',
                 uri: r.uri || '',
                 have: r.community?.have || 0
@@ -403,14 +420,16 @@
                     if (item.status === 'picked') keepOnlyPick(item);
                     item.repeated = items.some(other => other !== item && chosen(other)?.id === chosen(item).id);
                     placedKey = item.key;
-                    announce(item);
                 }
+                announce(item);
             } catch (e) {
                 item.status = 'error';
                 item.error = e.message;
+                announce(item);
             }
             saveItems();
             render();
+            if (item.status === 'picked') ensureRegistered(item);
         }
 
         function chosen(item) {
@@ -422,22 +441,51 @@
             item.pick = 0;
         }
 
+        // 같은 값을 다시 스캔하면 실물이 한 장 더 있는 것: 수량을 올리고 Discogs에도 한 건 더 넣는다 (운영자 결정 2026-11-02)
         function addScan(query, source) {
             const key = `${source}:${normal(query)}`;
-            if (items.some(item => item.key === key)) {
-                playBeep(300);
-                showMessage(`이미 목록에 있습니다: ${query}`);
+            const same = items.find(item => item.key === key);
+            if (same) {
+                if (!chosen(same)) {
+                    playBeep(300);
+                    showMessage(`이미 목록에 있지만 아직 판이 정해지지 않았습니다: ${query}`);
+                    return;
+                }
+                same.copies = (same.copies || 1) + 1;
+                same.addedAt = Date.now();
+                placedKey = same.key;
+                playBeep(660);
+                showMessage(`같은 음반 ${same.copies}번째 장: ${shortName(same)}`);
+                announce(same, 'copy');
+                saveItems();
+                render();
+                if (same.status === 'picked') ensureRegistered(same);
                 return;
             }
             playBeep(880);
-            const item = { key, source, query, status: 'searching', candidates: [], pick: 0, addedAt: Date.now(), discogs: null };
+            const item = { key, source, query, status: 'searching', candidates: [], pick: 0, copies: 1, addedAt: Date.now(), discogs: null, shelved: false };
             items.unshift(item);
             lookUp(item);
         }
 
         // 4. 장르 → 발매연도 → 아티스트 정렬 — 선반의 순서와 똑같아야 한다
+        function priorityGenre(genres) {
+            const known = (genres || []).filter(g => GENRE_PRIORITY.includes(g));
+            if (known.length) return known.sort((a, b) => GENRE_PRIORITY.indexOf(a) - GENRE_PRIORITY.indexOf(b))[0];
+            return (genres || [])[0] || NO_GENRE;
+        }
+
         function genreOf(item) {
-            return item.genre || chosen(item)?.genre?.[0] || NO_GENRE;
+            return item.genre || priorityGenre(chosen(item)?.genre);
+        }
+
+        // 7인치는 12인치가 끝난 뒤 따로 (운영자 결정 2026-11-02): 12인치 선반의 순서에서 뺀다
+        function isSeven(item) {
+            return !!chosen(item)?.seven;
+        }
+
+        function genreKo(genre) {
+            return GENRE_KO[genre] || genre;
         }
 
         // 운영자가 적은 연도가 Discogs의 연도보다 먼저다 (Discogs에 연도가 빈 판이 있다: Chosen Few 2058 975)
@@ -458,9 +506,14 @@
                 || String(chosen(a)?.album || '').localeCompare(String(chosen(b)?.album || ''), 'en', { sensitivity: 'base' });
         }
 
-        // 선반에 꽂힌 것으로 치는 음반: 판이 정해진 것 (찾지 못한 것과 오류는 아직 자리가 없다)
+        // 12인치 선반의 순서: 판이 정해진 12인치 (찾지 못한 것, 오류, 7인치는 자리가 없다)
+        function shelfOrder() {
+            return items.filter(item => chosen(item) && ['picked', 'check'].includes(item.status) && !isSeven(item)).sort(compareItems);
+        }
+
+        // 앞뒤 음반은 '꽂음' 표시한 음반만으로 센다: 상자에 든 음반을 앞 음반이라 하면 틀린 안내다
         function shelved() {
-            return items.filter(item => chosen(item) && ['picked', 'check'].includes(item.status)).sort(compareItems);
+            return shelfOrder().filter(item => item.shelved);
         }
 
         function decadeOf(item) {
@@ -470,27 +523,38 @@
 
         // 둘 자리: 같은 장르 칸 안에서 몇 번째, 바로 앞과 뒤에 꽂힌 음반
         function placementOf(item) {
-            const row = shelved();
-            const index = row.indexOf(item);
-            const section = row.filter(other => genreOf(other) === genreOf(item));
+            // 이 음반을 꽂힌 음반들 사이에 넣었을 때의 자리 (아직 안 꽂았어도 센다)
+            const section = shelved().filter(other => other !== item && genreOf(other) === genreOf(item));
+            section.push(item);
+            section.sort(compareItems);
             const at = section.indexOf(item);
             return {
                 genre: genreOf(item), year: yearOf(item), decade: decadeOf(item), artist: artistOf(item),
                 position: at + 1, count: section.length,
                 before: at > 0 ? section[at - 1] : null,
-                after: at >= 0 && at < section.length - 1 ? section[at + 1] : null,
-                index
+                after: at < section.length - 1 ? section[at + 1] : null
             };
         }
 
-        function announce(item) {
-            if (!speak || !('speechSynthesis' in window)) return;
-            const p = placementOf(item);
-            const text = `${p.genre}, ${p.year || '연도 미상'}, ${p.artist}`;
+        function say(text) {
+            if (speak === 'off' || !('speechSynthesis' in window)) return;
             speechSynthesis.cancel();
             const utter = new SpeechSynthesisUtterance(text);
             utter.lang = 'ko-KR';
             speechSynthesis.speak(utter);
+        }
+
+        // 1차 분류에서 듣는 말: 장르 (+ 확인 필요 / 이미 등록됨 / 같은 음반 N번째 / 7인치 / 찾지 못함)
+        function announce(item, event) {
+            if (item.status === 'none') return say('찾지 못함');
+            if (item.status === 'error') return say('오류');
+            if (!chosen(item)) return;
+            const parts = [isSeven(item) ? '7인치' : genreKo(genreOf(item))];
+            if (speak === 'full') parts.push(yearOf(item) || '연도 미상', artistOf(item));
+            if (event === 'copy') parts.push(`같은 음반 ${item.copies}번째`);
+            else if (item.status === 'check') parts.push('확인 필요');
+            else if (item.discogs?.state === 'exists') parts.push('이미 등록됨');
+            say(parts.join(', '));
         }
 
         function isRegistered(item) {
@@ -503,6 +567,8 @@
             if (filter === 'todo' && (item.status !== 'picked' || isRegistered(item))) return false;
             if (filter === 'done' && !isRegistered(item)) return false;
             if (filter === 'problem' && !['none', 'error'].includes(item.status) && item.discogs?.state !== 'failed') return false;
+            if (filter === 'box' && (item.shelved || !chosen(item) || isSeven(item))) return false;
+            if (filter === 'seven' && !isSeven(item)) return false;
             const words = filterText.value.trim().toLowerCase();
             if (!words) return true;
             const r = chosen(item) || {};
@@ -511,7 +577,8 @@
 
         // 5. 화면 그리기
         function statusBadge(item) {
-            if (isRegistered(item)) return ['Discogs 등록됨', 'bg-green-500/20 text-green-300 border-green-500/40'];
+            if (item.discogs?.state === 'registering') return ['등록 중…', 'bg-amber-500/20 text-amber-300 border-amber-500/40'];
+            if (isRegistered(item)) return [`Discogs 등록됨${(item.copies || 1) > 1 ? ` ×${item.copies}` : ''}`, 'bg-green-500/20 text-green-300 border-green-500/40'];
             if (item.discogs?.state === 'failed') return ['등록 실패', 'bg-red-500/20 text-red-300 border-red-500/40'];
             return {
                 searching: ['검색 중…', 'bg-amber-500/20 text-amber-300 border-amber-500/40'],
@@ -542,9 +609,18 @@
         }
 
         function placementHtml(item) {
-            const p = placementOf(item);
             const r = chosen(item);
             const key = esc(item.key);
+            if (isSeven(item)) {
+                return `
+                    <div class="flex items-center justify-between gap-2">
+                        <h2 class="text-sm font-semibold text-amber-300">📍 방금 찾은 음반</h2>
+                        <button data-action="place-done" data-key="${key}" class="text-xs text-amber-300/80 hover:text-amber-200">닫기 ×</button>
+                    </div>
+                    <div class="text-base text-white font-medium">${esc(shortName(item))}</div>
+                    <div class="bg-gray-950/70 rounded-xl py-4 text-center"><div class="text-2xl font-bold text-amber-300">7인치</div><div class="text-xs text-gray-400 mt-1">12인치가 끝난 뒤 따로 정리합니다 — 7인치 상자에 두세요 (장르 ${esc(genreOf(item))})</div></div>`;
+            }
+            const p = placementOf(item);
             const neighbour = (label, other) => `
                 <div class="flex items-baseline gap-2 min-w-0">
                     <span class="text-xs text-amber-300/80 w-7 flex-shrink-0">${label}</span>
@@ -564,12 +640,16 @@
                     <div class="bg-gray-950/70 rounded-xl py-3 min-w-0"><div class="text-[11px] text-gray-400">아티스트</div><div class="text-lg font-bold text-amber-300 leading-tight truncate px-1">${esc(p.artist || '-')}</div></div>
                 </div>
                 <div class="bg-gray-950/70 rounded-xl p-3 flex flex-col gap-1.5">
-                    <div class="text-xs text-gray-400">${esc(p.genre)} 칸 ${p.count}장 중 <span class="text-amber-300 font-semibold">${p.position}번째</span> — 이 두 장 사이에 꽂으세요</div>
+                    <div class="text-xs text-gray-400">${esc(p.genre)} 칸에 꽂힌 ${p.count - 1}장 중 <span class="text-amber-300 font-semibold">${p.position}번째</span> 자리 — 이 두 장 사이에 꽂으세요</div>
                     ${neighbour('앞', p.before)}
                     ${neighbour('뒤', p.after)}
                 </div>
                 ${caution}
+                ${(item.copies || 1) > 1 ? `<div class="text-xs text-amber-200/90">같은 음반 ${item.copies}장 — 나란히 꽂습니다.</div>` : ''}
                 <div class="flex flex-wrap gap-2">
+                    ${item.shelved
+                        ? `<button data-action="unshelve" data-key="${key}" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs py-1.5 px-3 rounded-lg">✔ 꽂음 (취소)</button>`
+                        : `<button data-action="shelve" data-key="${key}" class="bg-green-700 hover:bg-green-600 text-white text-xs font-semibold py-1.5 px-3 rounded-lg">선반에 꽂았음</button>`}
                     ${noYear}
                     <button data-action="year" data-key="${key}" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs py-1.5 px-3 rounded-lg">${p.year ? '연도 고치기' : ''}</button>
                     <button data-action="genre" data-key="${key}" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs py-1.5 px-3 rounded-lg">장르 칸 바꾸기</button>
@@ -612,11 +692,15 @@
                 <div class="text-xs text-gray-400">${esc([(r.genre || []).concat(r.style || []).join(' / '), r.format].filter(Boolean).join(' · '))}</div>`
                 : `<div class="text-sm ${item.status === 'searching' ? 'text-gray-400' : 'text-red-300'}">${esc(item.error || (item.status === 'none' ? noneText(item) : 'Discogs 검색 중…'))}</div>`;
 
+            const d = item.discogs || {};
             const notes = [
-                item.repeated ? '같은 음반이 목록에 또 있습니다.' : '',
-                item.discogs?.state === 'exists' ? 'Discogs 컬렉션에 이미 있어 새로 넣지 않았습니다.' : '',
-                item.discogs?.state === 'done' ? `Discogs 폴더 「${item.discogs.folder}」에 넣었습니다.` : '',
-                item.discogs?.state === 'failed' ? `등록 실패: ${item.discogs.message}` : ''
+                item.repeated ? '같은 음반이 목록에 또 있습니다 (다른 값으로 스캔됨).' : '',
+                (item.copies || 1) > 1 ? `실물 ${item.copies}장.` : '',
+                isSeven(item) ? '7인치 — 12인치가 끝난 뒤 따로.' : '',
+                d.state === 'exists' ? `Discogs 컬렉션에 이미 있던 판입니다${d.moved ? ` (폴더 「${d.folder}」로 옮김)` : ''}.` : '',
+                d.state === 'done' ? `Discogs 폴더 「${d.folder}」에 넣었습니다${d.adopted ? ` (이미 있던 ${d.adopted}건 포함)` : ''}.` : '',
+                d.state === 'failed' ? `등록 실패: ${d.message}` : '',
+                d.state === 'removed' ? 'Discogs에서 뺐습니다.' : ''
             ].filter(Boolean).map(text => `<div class="text-xs text-amber-200/90">${esc(text)}</div>`).join('');
 
             const actions = [
@@ -625,7 +709,8 @@
                 ['none', 'error'].includes(item.status) ? button('retry', '다시 검색') : '',
                 ['none', 'error', 'check'].includes(item.status) ? button('edit', '검색어 고치기') : '',
                 r ? button('place', '둘 자리 보기') : '',
-                isRegistered(item) ? '' : button('remove', '삭제', 'bg-gray-800 hover:bg-gray-700 text-gray-400')
+                r && !isSeven(item) && item.status === 'picked' ? (item.shelved ? button('unshelve', '✔ 꽂음', 'bg-green-900/60 hover:bg-green-900 text-green-200') : button('shelve', '꽂았음', 'bg-green-700 hover:bg-green-600 text-white')) : '',
+                isRegistered(item) ? button('unregister', 'Discogs에서 빼기', 'bg-gray-800 hover:bg-red-900 text-red-300') : button('remove', '삭제', 'bg-gray-800 hover:bg-gray-700 text-gray-400')
             ].filter(Boolean).join('');
 
             return `
@@ -677,7 +762,7 @@
             }
             const groups = new Map();
             visible.sort(compareItems).forEach(item => {
-                const genre = genreOf(item);
+                const genre = isSeven(item) ? SEVEN : genreOf(item);
                 if (!groups.has(genre)) groups.set(genre, []);
                 groups.get(genre).push(item);
             });
@@ -687,8 +772,8 @@
                 return `
                     <details data-genre="${esc(genre)}" ${open ? 'open' : ''} class="bg-gray-950/60 rounded-xl border border-gray-800">
                         <summary class="flex justify-between cursor-pointer px-3 py-3 font-medium text-base">
-                            <span>${esc(genre)}</span>
-                            <span class="text-amber-300 font-mono text-sm">${list.length}장</span>
+                            <span>${esc(genre)} <span class="text-xs text-gray-400">${esc(genreKo(genre))}</span></span>
+                            <span class="text-amber-300 font-mono text-sm">${list.length}장${genre === SEVEN ? '' : ` · 꽂음 ${list.filter(i => i.shelved).length}`}</span>
                         </summary>
                         ${open ? `<div class="space-y-2 p-2">${pagedHtml(genre, list)}</div>` : ''}
                     </details>`;
@@ -696,18 +781,19 @@
         }
 
         function render() {
-            const ready = items.filter(item => item.status === 'picked' && !isRegistered(item));
+            const ready = items.filter(item => item.status === 'picked' && !isRegistered(item) && item.discogs?.state !== 'registering');
             const check = items.filter(item => item.status === 'check');
             const done = items.filter(isRegistered);
+            const box = items.filter(item => chosen(item) && !isSeven(item) && !item.shelved && item.status === 'picked');
             const tile = (count, label, tone = 'text-amber-400') => `<div class="bg-gray-950/60 rounded-lg py-2"><div class="text-xl font-bold ${tone} tile-number">${count}</div><div class="text-[11px] text-gray-400">${label}</div></div>`;
             document.getElementById('summary').innerHTML =
-                tile(items.length, '전체', 'text-gray-100') + tile(check.length, '확인 필요', 'text-sky-300') + tile(ready.length, '등록 대기') + tile(done.length, '등록 완료', 'text-green-300');
+                tile(items.length, '전체', 'text-gray-100') + tile(check.length, '확인 필요', 'text-sky-300') + tile(box.length, '상자에 있음') + tile(done.length, 'Discogs 등록', 'text-green-300');
 
             confirmAllButton.textContent = `확인 필요 ${check.length}장을 모두 1순위 판으로 확정`;
             confirmAllButton.classList.toggle('hidden', check.length === 0);
-            registerButton.textContent = !auth.token ? '③에서 Discogs를 연결하면 등록할 수 있습니다'
+            registerButton.textContent = !auth.token ? '③에서 Discogs를 연결하면 확정과 동시에 등록됩니다'
                 : registering ? '등록 중…'
-                : ready.length ? `Discogs에 등록 (${ready.length}장)` : '등록할 음반이 없습니다';
+                : ready.length ? `아직 등록 안 된 ${ready.length}장 Discogs에 등록` : '확정된 음반은 모두 Discogs에 있습니다';
             registerButton.disabled = registering || ready.length === 0 || !auth.token;
             stopRegisterButton.classList.toggle('hidden', !registering);
 
@@ -715,7 +801,7 @@
             const placement = document.getElementById('placement');
             placement.classList.toggle('hidden', !placed);
             placement.innerHTML = placed ? placementHtml(placed) : '';
-            document.getElementById('speakToggle').checked = speak;
+            document.getElementById('speakMode').value = speak;
 
             document.querySelectorAll('.sort-tab').forEach(tab => {
                 const on = tab.dataset.sort === sortMode;
@@ -752,26 +838,83 @@
             return folderIds.get(genre);
         }
 
-        async function inCollection(releaseId) {
+        // 컬렉션에 이미 있는 이 판의 등록 건들 (instance_id, folder_id)
+        async function instancesOf(releaseId) {
             try {
                 const data = await discogs(`${userPath()}/releases/${releaseId}`);
-                return (data.releases || []).length > 0;
+                return (data.releases || []).map(r => ({ instanceId: r.instance_id, folderId: r.folder_id }));
             } catch (e) {
-                if (e.status === 404) return false;
+                if (e.status === 404) return [];
                 throw e;
             }
         }
 
+        // 실물 한 장 = 등록 한 건 (운영자 결정 2026-11-02): 이미 있던 건을 먼저 쓰고(장르 폴더로 옮김), 모자라는 만큼 새로 넣는다.
+        // 컬렉션에 실물보다 많이 등록돼 있어도 지우지 않는다 — 스캔이 끝난 뒤 사람이 본다.
         async function registerItem(item) {
             const release = chosen(item);
-            if (await inCollection(release.id)) {
-                item.discogs = { state: 'exists' };
-                return;
-            }
-            const genre = release.genre?.[0];
+            const genre = genreOf(item) === NO_GENRE ? '' : genreOf(item);
             const folderId = await folderFor(genre);
-            const added = await discogs(`${userPath()}/folders/${folderId}/releases/${release.id}`, { method: 'POST' });
-            item.discogs = { state: 'done', instanceId: added.instance_id, folder: genre || 'Uncategorized' };
+            const folder = genre || 'Uncategorized';
+            const wanted = item.copies || 1;
+            const existing = await instancesOf(release.id);
+            const mine = [];
+            let moved = 0;
+            for (const inst of existing.slice(0, wanted)) {
+                if (inst.folderId !== folderId) {
+                    await discogs(`${userPath()}/folders/${inst.folderId}/releases/${release.id}/instances/${inst.instanceId}`, { method: 'POST', body: JSON.stringify({ folder_id: folderId }) });
+                    moved += 1;
+                }
+                mine.push({ instanceId: inst.instanceId, folderId });
+            }
+            while (mine.length < wanted) {
+                const added = await discogs(`${userPath()}/folders/${folderId}/releases/${release.id}`, { method: 'POST' });
+                mine.push({ instanceId: added.instance_id, folderId });
+            }
+            const adopted = Math.min(existing.length, wanted);
+            item.discogs = {
+                state: adopted === wanted ? 'exists' : 'done',
+                folder, instances: mine, adopted, moved: moved > 0,
+                extra: Math.max(0, existing.length - wanted) // 실물보다 많이 등록된 건
+            };
+        }
+
+        // 확정과 동시에 등록 (운영자 결정 2026-11-02). 한 장씩 차례로; 연결이 없으면 '등록 대기'로 남는다.
+        function ensureRegistered(item) {
+            if (!auth.token || isRegistered(item) || item.discogs?.state === 'registering' || item.status !== 'picked') return;
+            item.discogs = { state: 'registering' };
+            render();
+            registerChain = registerChain.then(async () => {
+                try {
+                    await registerItem(item);
+                    if (item.discogs.extra) showMessage(`${shortName(item)}: Discogs에 실물(${item.copies || 1}장)보다 ${item.discogs.extra}건 더 등록돼 있습니다. 스캔이 끝난 뒤 Discogs 화면에서 정리하세요.`);
+                } catch (e) {
+                    item.discogs = { state: 'failed', message: e.message };
+                    showMessage(`등록 실패: ${shortName(item)} — ${e.message}`);
+                }
+                saveItems();
+                render();
+            });
+        }
+
+        // 이 앱이 등록하거나 맡은 건을 Discogs에서 뺀다 (잘못 확정한 판을 되돌릴 때)
+        async function unregister(item) {
+            const release = chosen(item);
+            const instances = item.discogs?.instances || [];
+            if (!confirm(`${shortName(item)}의 등록 ${instances.length}건을 Discogs 컬렉션에서 뺍니다. 되돌릴 수 없습니다.`)) return;
+            try {
+                for (const inst of instances) {
+                    await discogs(`${userPath()}/folders/${inst.folderId}/releases/${release.id}/instances/${inst.instanceId}`, { method: 'DELETE' });
+                }
+                item.discogs = { state: 'removed' };
+                item.status = 'check';
+                item.shelved = false;
+                showMessage(`Discogs에서 뺐습니다: ${shortName(item)}. 판을 다시 고르거나 삭제하세요.`);
+            } catch (e) {
+                showMessage(`빼지 못했습니다: ${e.message}`);
+            }
+            saveItems();
+            render();
         }
 
         async function registerAll() {
@@ -794,6 +937,7 @@
             for (const item of targets) {
                 if (stopRequested) break;
                 try {
+                    await registerChain;
                     await registerItem(item);
                     finished += 1;
                     failures = 0;
@@ -824,10 +968,10 @@
         }
 
         function buildCsv() {
-            const header = ['장르', '스타일', '발매연도', '아티스트', '앨범', '카탈로그 번호', '레이블', '국가', '포맷', 'Discogs 번호', 'Discogs 주소', '상태', '스캔 값'];
+            const header = ['칸', '장르(Discogs)', '스타일', '발매연도', '아티스트', '앨범', '카탈로그 번호', '레이블', '국가', '포맷', '수량', '꽂음', 'Discogs 번호', 'Discogs 주소', '상태', '스캔 값'];
             const rows = items.filter(chosen).sort(compareItems).map(item => {
                 const r = chosen(item);
-                return [genreOf(item), (r.style || []).join(' / '), yearOf(item), r.artist, r.album, r.catno, r.label, r.country, r.format, r.id,
+                return [isSeven(item) ? SEVEN : genreOf(item), (r.genre || []).join(' / '), (r.style || []).join(' / '), yearOf(item), r.artist, r.album, r.catno, r.label, r.country, r.format, item.copies || 1, item.shelved ? '꽂음' : '', r.id,
                     r.uri ? `https://www.discogs.com${r.uri}` : '', statusBadge(item)[0], item.query];
             });
             return '﻿' + [header, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n');
@@ -962,7 +1106,20 @@
                     item.status = 'picked';
                     keepOnlyPick(item);
                     expandedKey = null;
+                    saveItems();
+                    render();
+                    ensureRegistered(item);
+                    return;
+                case 'shelve':
+                    item.shelved = true;
+                    if (placedKey === item.key) placedKey = null;
                     break;
+                case 'unshelve':
+                    item.shelved = false;
+                    break;
+                case 'unregister':
+                    unregister(item);
+                    return;
                 case 'retry':
                     lookUp(item);
                     return;
@@ -1028,6 +1185,7 @@
             });
             saveItems();
             render();
+            check.forEach(ensureRegistered);
         });
 
         registerButton.addEventListener('click', registerAll);
@@ -1040,14 +1198,10 @@
         });
         filterText.addEventListener('input', render);
         filterStatus.addEventListener('change', render);
-        document.getElementById('speakToggle').addEventListener('change', event => {
-            speak = event.target.checked;
+        document.getElementById('speakMode').addEventListener('change', event => {
+            speak = event.target.value;
             store(SPEAK_KEY, speak);
-            if (speak) {
-                const utter = new SpeechSynthesisUtterance('소리 안내를 켰습니다');
-                utter.lang = 'ko-KR';
-                speechSynthesis.speak(utter);
-            }
+            say(speak === 'genre' ? '장르만 읽습니다' : '장르, 연도, 아티스트를 읽습니다');
         });
 
         document.getElementById('connectButton').addEventListener('click', async () => {
